@@ -1,0 +1,6 @@
+target
+.git
+node_modules
+tests
+dev
+bin

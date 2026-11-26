@@ -71,8 +71,8 @@ button { cursor: pointer; }
 }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 800; font-size: 18px; letter-spacing: -0.02em; text-decoration: none; color: inherit; }
 .brand svg { width: 24px; height: 24px; }
-.brand .stone { fill: var(--encre); }
-.brand .stone-top { fill: var(--terre); }
+.brand .mark-curve { fill: none; stroke: var(--encre); stroke-width: 4.6; stroke-linecap: round; }
+.brand .mark-point { fill: var(--terre); }
 .topbar .spacer { flex: 1; }
 .field {
   appearance: none; background: var(--surface); border: 1px solid var(--schiste); border-radius: 8px;

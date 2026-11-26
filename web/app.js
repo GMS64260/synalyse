@@ -52,11 +52,11 @@ function svg(tag, attrs = {}, ...children) {
   return el;
 }
 
+// Le signe de Synalyse : une courbe en S qui monte vers un point, la mesure.
 function logoMark() {
   return svg('svg', { viewBox: '0 0 32 32', 'aria-hidden': 'true' },
-    svg('rect', { class: 'stone', x: 3, y: 21, width: 26, height: 8, rx: 4 }),
-    svg('rect', { class: 'stone', x: 7, y: 12, width: 18, height: 7, rx: 3.5 }),
-    svg('rect', { class: 'stone-top', x: 11, y: 4, width: 10, height: 6, rx: 3 }));
+    svg('path', { class: 'mark-curve', d: 'M4.5 25.5C16 25.5 13 9.5 21.5 8' }),
+    svg('circle', { class: 'mark-point', cx: 26, cy: 7.5, r: 3.6 }));
 }
 
 function duration(seconds) {

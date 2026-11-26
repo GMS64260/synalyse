@@ -34,4 +34,4 @@ PostHog répond au besoin, mais son auto-hébergement demande 16 Go de RAM, Clic
 
 AGPL v3 ou ultérieure. Voir [LICENSE](LICENSE). Si vous hébergez une version modifiée comme service, vous devez en publier les modifications.
 
-Synalyse est un projet indépendant, sans lien avec Matomo, InnoCraft ni PostHog.
+Synalyse est un produit de [Synalto](https://synalto.eu), sans lien avec Matomo, InnoCraft ni PostHog.

@@ -1,0 +1,7 @@
+{
+  "SynInsights": {
+    "TooManyVisits": "Cette période contient trop de visites pour calculer le rapport. Choisissez une période plus courte ou ajoutez un segment.",
+    "ErrorNameRequired": "Donnez un nom à l'entonnoir.",
+    "ErrorFunnelNotFound": "Cet entonnoir n'existe plus."
+  }
+}

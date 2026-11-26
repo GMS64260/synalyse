@@ -36,6 +36,6 @@ case "$cmd" in
   php)     asweb php "$@" ;;
   sql)     sudo -n docker exec -i "$DB" sh -c 'mariadb -umatomo -p"$MARIADB_PASSWORD" matomo '"$*" ;;
   seed)    node "$ROOT/dev/seed.mjs" "$@" ;;
-  test)    node --test "$ROOT/tests/" "$@" ;;
+  test)    cd "$ROOT" && node --test "$@" tests/*.test.mjs ;;
   *) sed -n 2,3p "$0"; exit 1 ;;
 esac

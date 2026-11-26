@@ -1,6 +1,6 @@
 # Secrets et état local : jamais versionnés
 .env
-dev/.env
 dev/.token
+target/
 node_modules/
 *.log

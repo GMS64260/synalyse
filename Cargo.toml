@@ -1,0 +1,28 @@
+[package]
+name = "synatomo"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "Mesure d'audience et analyse produit auto-hébergées, en Rust."
+repository = "https://github.com/GMS64260/synatomo"
+
+[dependencies]
+argon2 = "0.6.0"
+axum = "0.8.9"
+chrono = "0.4.45"
+chrono-tz = "0.10.4"
+getrandom = "0.4.3"
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.2"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "net", "time", "sync"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+[profile.dev]
+debug = "line-tables-only"

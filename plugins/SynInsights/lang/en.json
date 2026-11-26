@@ -1,7 +1,0 @@
-{
-  "SynInsights": {
-    "TooManyVisits": "This period holds too many visits to compute the report. Pick a shorter period or add a segment.",
-    "ErrorNameRequired": "Give the funnel a name.",
-    "ErrorFunnelNotFound": "This funnel no longer exists."
-  }
-}

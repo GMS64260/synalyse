@@ -1,41 +1,43 @@
 #!/usr/bin/env bash
-# Pilote l'instance de développement Synatomo (jamais la production).
-# Usage : bin/dev up|down|reset|install|console <args>|php <args>|sql|logs|link|seed|test
+# Outils de développement de Synatomo. La compilation tourne dans un conteneur
+# plafonné en mémoire : le VPS ne doit jamais geler à cause d'un build.
+# Usage : bin/dev cargo <args> | build | check | unit | run | stop | logs | seed | test | sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DC=(sudo -n docker compose --env-file "$ROOT/dev/.env" -f "$ROOT/dev/docker-compose.yml")
-APP=synatomo_dev_app
-DB=synatomo_dev_db
-asweb() { sudo -n docker exec -i -u www-data "$APP" "$@"; }
+IMAGE=rust:1-slim-trixie
+CACHE=synatomo_cache
+PORT="${SYN_DEV_PORT:-8292}"
+NAME=synatomo_dev
 
-# Relie chaque plugin du dépôt dans l'instance (lien symbolique vers le montage en lecture seule).
-link() {
-  for d in "$ROOT"/plugins/*/; do
-    [ -d "$d" ] || continue
-    n="$(basename "$d")"
-    asweb sh -c "[ -e /var/www/html/plugins/$n ] || ln -s /opt/synatomo/plugins/$n /var/www/html/plugins/$n"
-  done
+toolchain() {
+  sudo -n docker volume inspect "$CACHE" >/dev/null 2>&1 || {
+    sudo -n docker volume create "$CACHE" >/dev/null
+    sudo -n docker run --rm -v "$CACHE":/cache "$IMAGE" chown 1000:1000 /cache
+  }
+  sudo -n docker run --rm --user 1000:1000 --memory 2500m --cpus 3 \
+    -e HOME=/cache -e CARGO_HOME=/cache/cargo -e CARGO_TARGET_DIR=/cache/target -e CARGO_BUILD_JOBS=3 \
+    -v "$CACHE":/cache -v "$ROOT":/src -w /src "$IMAGE" "$@"
 }
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
-  up)      "${DC[@]}" up -d ;;
-  down)    "${DC[@]}" down ;;
-  reset)   "${DC[@]}" down -v ; rm -f "$ROOT/dev/.token" ; "${DC[@]}" up -d ;;
-  logs)    "${DC[@]}" logs --tail=80 "$@" ;;
-  link)    link ;;
-  install)
-    link; asweb php -d display_errors=1 /opt/synatomo/dev/install.php
-    asweb php /var/www/html/console core:update --yes >/dev/null
-    if [ ! -s "$ROOT/dev/.token" ]; then
-      ( umask 077; asweb php -d display_errors=1 /opt/synatomo/dev/install.php data --token 2>&1 >/dev/null \
-          | sed -n 's/^TOKEN=//p' > "$ROOT/dev/.token" )
-      echo "jeton écrit dans dev/.token"
-    fi ;;
-  console) asweb php /var/www/html/console "$@" ;;
-  php)     asweb php "$@" ;;
-  sql)     sudo -n docker exec -i "$DB" sh -c 'mariadb -umatomo -p"$MARIADB_PASSWORD" matomo '"$*" ;;
-  seed)    node "$ROOT/dev/seed.mjs" "$@" ;;
-  test)    cd "$ROOT" && node --test "$@" tests/*.test.mjs ;;
-  *) sed -n 2,3p "$0"; exit 1 ;;
+  cargo) toolchain cargo "$@" ;;
+  sh)    toolchain sh -c "$*" ;;
+  check) toolchain cargo check "$@" ;;
+  build) toolchain cargo build "$@" ;;
+  unit)  toolchain cargo test "$@" ;;
+  run)
+    # Relance le serveur de dev sur 127.0.0.1:$PORT avec une base jetable (volume synatomo_devdata).
+    sudo -n docker rm -f "$NAME" >/dev/null 2>&1 || true
+    [ "${1:-}" = "--fresh" ] && sudo -n docker volume rm synatomo_devdata >/dev/null 2>&1 || true
+    sudo -n docker run -d --name "$NAME" --memory 256m -p "127.0.0.1:$PORT:8292" \
+      -e SYNATOMO_LISTEN=0.0.0.0:8292 -e SYNATOMO_DATA=/data -e SYNATOMO_DEV=1 \
+      -v "$CACHE":/cache:ro -v synatomo_devdata:/data "$IMAGE" /cache/target/debug/synatomo serve >/dev/null
+    echo "http://127.0.0.1:$PORT" ;;
+  exec)  sudo -n docker exec -i "$NAME" /cache/target/debug/synatomo "$@" ;;
+  stop)  sudo -n docker rm -f "$NAME" >/dev/null 2>&1 || true ;;
+  logs)  sudo -n docker logs --tail "${1:-60}" "$NAME" ;;
+  seed)  node "$ROOT/dev/seed.mjs" "$@" ;;
+  test)  cd "$ROOT" && node --test "$@" tests/*.test.mjs ;;
+  *) sed -n 2,4p "$0"; exit 1 ;;
 esac

@@ -1,48 +1,37 @@
 # Synatomo
 
-L'analyse produit qui manque à Matomo libre : entonnoirs, parcours, rétention, enregistrements de session et heatmaps, sous forme de plugins légers. Deux conteneurs, MariaDB pour seule base, moins de 1 Go de RAM.
+Mesure d'audience et analyse produit auto-hébergées : entonnoirs, parcours, rétention, enregistrements de session et heatmaps. Un binaire Rust et un PostgreSQL, là où les plateformes équivalentes demandent une quarantaine de conteneurs.
 
-Synatomo ne remplace pas Matomo, il s'y ajoute. Les plugins s'installent sur une instance Matomo 5 existante et calculent leurs rapports sur les visites déjà enregistrées : l'historique est conservé, rien n'est à migrer.
+> Le projet démarre. Rien n'est encore utilisable ; ce fichier décrit la cible.
 
 ## Pourquoi
 
-PostHog répond au besoin, mais son auto-hébergement demande 16 Go de RAM et une quarantaine de conteneurs (ClickHouse, Kafka, Postgres, Redis…). Les extensions équivalentes de Matomo sont payantes et propriétaires. Synatomo réécrit ces fonctions à partir de zéro, pour un serveur modeste.
+PostHog répond au besoin, mais son auto-hébergement demande 16 Go de RAM, ClickHouse, Kafka et Redis. Matomo est léger, mais ses fonctions d'analyse produit sont payantes et propriétaires. Synatomo vise l'essentiel du premier avec l'empreinte du second.
 
 ## Principes
 
-- **Léger** : pas de ClickHouse, pas de Kafka, pas de service en plus. Les rapports sont calculés en SQL sur les journaux de Matomo.
-- **Sans bandeau par défaut** : la mesure d'audience de base reste sans cookie, dans le cadre de l'exemption de consentement de la CNIL. Les fonctions qui en sortent (enregistrements, heatmaps, suivi par visiteur) ne s'activent qu'après acceptation du visiteur.
-- **Des plugins, pas un fork** : le cœur de Matomo n'est pas modifié, les mises à jour de sécurité s'appliquent sans refusion.
-- **Code original** : aucune ligne ne vient des extensions payantes d'InnoCraft.
+- **Léger d'abord** : tourne sur un petit serveur avec moins de 300 Mo de RAM, base comprise.
+- **Fait pour grandir** : serveur sans état, événements partitionnés, stockage isolé derrière une interface pour accueillir un moteur en colonnes le jour où le volume l'exige.
+- **Sans bandeau par défaut** : la mesure d'audience de base ne pose aucun cookie et ne reconnaît pas un visiteur d'un jour à l'autre. Les fonctions qui demandent un consentement (enregistrements, heatmaps, suivi dans le temps) ne s'activent qu'après acceptation.
+- **Vos données chez vous** : aucune dépendance à un service tiers, l'adresse IP n'est jamais stockée.
+- **Code original** : écrit de zéro, sans reprise de Matomo, de PostHog ni de leurs extensions.
 
 ## Feuille de route
 
 | Lot | Contenu | État |
 |---|---|---|
-| 0 | Socle : dépôt, instance de développement, jeu d'essai, tests | En cours |
-| 1 | Entonnoirs et parcours des visiteurs | À venir |
-| 2 | Rétention et cohortes | À venir |
-| 3 | Enregistrements de session (`rrweb`), traceur commun, consentement | À venir |
-| 4 | Heatmaps | À venir |
-| 5 | Capture automatique des clics, erreurs JavaScript | À venir |
-| 6 | Tests A/B, feature flags, sondages | Si le besoin se confirme |
-
-## Développement
-
-L'instance de développement est indépendante de toute production. Elle écoute sur `127.0.0.1:8291`.
-
-```bash
-bin/dev up        # démarre Matomo 5.14 et MariaDB
-bin/dev install   # installe l'instance et relie les plugins du dépôt
-bin/dev seed      # charge le jeu d'essai déterministe
-bin/dev test      # lance les tests
-bin/dev reset     # repart d'une base vide
-```
-
-Prérequis : Docker et Node.js 22 ou plus récent. Les secrets de l'instance vivent dans `dev/.env`, jamais versionné.
+| 0 | Socle : schéma, organisations et projets, comptes, ingestion, traceur | Cadrage |
+| 1 | Mesure d'audience, compatibilité avec le traceur Matomo, import de l'historique | À venir |
+| 2 | Entonnoirs et parcours des visiteurs | À venir |
+| 3 | Utilisateurs identifiés, rétention, cohortes | À venir |
+| 4 | Enregistrements de session | À venir |
+| 5 | Heatmaps | À venir |
+| 6 | Capture automatique des clics, erreurs JavaScript | À venir |
+| 7 | Feature flags, tests A/B, sondages | À venir |
+| 8 | Entreprise : SSO, journal d'audit, rôles fins, stockage en colonnes | À venir |
 
 ## Licence
 
-GPL v3 ou ultérieure, comme Matomo. Voir [LICENSE](LICENSE).
+AGPL v3 ou ultérieure. Voir [LICENSE](LICENSE). Si vous hébergez une version modifiée comme service, vous devez en publier les modifications.
 
-Matomo est une marque de InnoCraft Ltd. Synatomo est un projet indépendant, sans lien avec InnoCraft ni avec le projet Matomo.
+Synatomo est un projet indépendant, sans lien avec Matomo, InnoCraft ni PostHog.

@@ -21,4 +21,6 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{project_id}/tokens/{token_id}", delete(projects::revoke_token))
         .route("/projects/{project_id}/import", post(projects::import).layer(DefaultBodyLimit::max(8 << 20)))
         .route("/projects/{project_id}/stats/summary", get(stats::summary))
+        .route("/projects/{project_id}/stats/breakdown", get(stats::breakdown))
+        .route("/projects/{project_id}/stats/realtime", get(stats::realtime))
 }

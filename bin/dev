@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Outils de développement de Synalyse. La compilation tourne dans un conteneur
 # plafonné en mémoire : le VPS ne doit jamais geler à cause d'un build.
-# Usage : bin/dev cargo <args> | build | check | unit | run | stop | logs | seed | test | sh
+# Usage : bin/dev cargo <args> | build | check | unit | db [--fresh] | run | cli <args> | psql | stop | logs | test | sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IMAGE=rust:1-slim-trixie
+IMAGE=synalyse-build
 CACHE=synalyse_cache
 PORT="${SYNALYSE_DEV_PORT:-8292}"
 NAME=synalyse_dev
+DB=synalyse_dev_db
+NET=synalyse_dev
+DBURL="postgres://synalyse:synalyse-dev@$DB/synalyse"
 
 toolchain() {
+  sudo -n docker image inspect "$IMAGE" >/dev/null 2>&1 || sudo -n docker build -q -t "$IMAGE" -f "$ROOT/dev/Dockerfile.build" "$ROOT/dev" >/dev/null
   sudo -n docker volume inspect "$CACHE" >/dev/null 2>&1 || {
     sudo -n docker volume create "$CACHE" >/dev/null
     sudo -n docker run --rm -v "$CACHE":/cache "$IMAGE" chown 1000:1000 /cache
@@ -26,18 +30,40 @@ case "$cmd" in
   check) toolchain cargo check "$@" ;;
   build) toolchain cargo build "$@" ;;
   unit)  toolchain cargo test "$@" ;;
+  db)
+    # PostgreSQL de développement, joignable seulement depuis le réseau Docker synalyse_dev.
+    sudo -n docker network inspect "$NET" >/dev/null 2>&1 || sudo -n docker network create "$NET" >/dev/null
+    if [ "${1:-}" = "--fresh" ]; then
+      sudo -n docker rm -f "$DB" >/dev/null 2>&1 || true
+      sudo -n docker volume rm synalyse_devdb >/dev/null 2>&1 || true
+    fi
+    sudo -n docker inspect "$DB" >/dev/null 2>&1 || sudo -n docker run -d --name "$DB" --network "$NET" --memory 256m \
+      -e POSTGRES_USER=synalyse -e POSTGRES_PASSWORD=synalyse-dev -e POSTGRES_DB=synalyse \
+      -v synalyse_devdb:/var/lib/postgresql/data postgres:17-alpine -c shared_buffers=64MB >/dev/null
+    sudo -n docker start "$DB" >/dev/null
+    for _ in $(seq 1 40); do sudo -n docker exec "$DB" pg_isready -q -U synalyse && break; sleep 0.5; done ;;
   run)
-    # Relance le serveur de dev sur 127.0.0.1:$PORT avec une base jetable (volume synalyse_devdata).
+    # Relance le serveur de dev sur 127.0.0.1:$PORT (binaire de debug du volume de build).
+    "$0" db
     sudo -n docker rm -f "$NAME" >/dev/null 2>&1 || true
-    [ "${1:-}" = "--fresh" ] && sudo -n docker volume rm synalyse_devdata >/dev/null 2>&1 || true
-    sudo -n docker run -d --name "$NAME" --memory 256m -p "127.0.0.1:$PORT:8292" \
-      -e SYNALYSE_LISTEN=0.0.0.0:8292 -e SYNALYSE_DATA=/data -e SYNALYSE_DEV=1 \
-      -v "$CACHE":/cache:ro -v synalyse_devdata:/data "$IMAGE" /cache/target/debug/synalyse serve >/dev/null
+    sudo -n docker run -d --name "$NAME" --network "$NET" --memory 256m -p "127.0.0.1:$PORT:8292" \
+      -e SYNALYSE_LISTEN=0.0.0.0:8292 -e SYNALYSE_DATABASE_URL="$DBURL" -e SYNALYSE_BASE_URL="http://127.0.0.1:$PORT" \
+      -e SYNALYSE_TRUSTED_PROXIES="${SYNALYSE_TRUSTED_PROXIES:-0}" \
+      -v "$CACHE":/cache:ro "$IMAGE" /cache/target/debug/synalyse serve >/dev/null
+    for _ in $(seq 1 40); do curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null && break; sleep 0.25; done
     echo "http://127.0.0.1:$PORT" ;;
-  exec)  sudo -n docker exec -i "$NAME" /cache/target/debug/synalyse "$@" ;;
-  stop)  sudo -n docker rm -f "$NAME" >/dev/null 2>&1 || true ;;
+  cli)
+    # Lance une commande du binaire (ex. bin/dev cli admin create --email a@b.c) contre la base de dev.
+    sudo -n docker run --rm --network "$NET" -e SYNALYSE_DATABASE_URL="$DBURL" ${SYNALYSE_ADMIN_PASSWORD:+-e SYNALYSE_ADMIN_PASSWORD="$SYNALYSE_ADMIN_PASSWORD"} \
+      -v "$CACHE":/cache:ro "$IMAGE" /cache/target/debug/synalyse "$@" ;;
+  psql)  sudo -n docker exec -i "$DB" psql -U synalyse -d synalyse "$@" ;;
+  stop)  sudo -n docker rm -f "$NAME" "$DB" >/dev/null 2>&1 || true ;;
   logs)  sudo -n docker logs --tail "${1:-60}" "$NAME" ;;
-  seed)  node "$ROOT/dev/seed.mjs" "$@" ;;
-  test)  cd "$ROOT" && node --test "$@" tests/*.test.mjs ;;
+  test)
+    # Tests d'intégration contre le serveur de dev. Crée au besoin les deux comptes d'essai.
+    for account in "dev@synalyse.test:Démo" "autre@synalyse.test:Autre organisation"; do
+      SYNALYSE_ADMIN_PASSWORD="dev-password-local-1234" "$0" cli admin create --email "${account%%:*}" --org "${account#*:}" >/dev/null 2>&1 || true
+    done
+    cd "$ROOT" && node --test "$@" tests/*.test.mjs ;;
   *) sed -n 2,4p "$0"; exit 1 ;;
 esac

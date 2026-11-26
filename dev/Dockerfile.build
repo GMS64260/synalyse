@@ -1,0 +1,3 @@
+# Image de compilation locale : la chaîne Rust officielle plus rustfmt et clippy.
+FROM rust:1-slim-trixie
+RUN rustup component add rustfmt clippy

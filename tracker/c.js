@@ -23,6 +23,7 @@
   // L'identifiant stable n'existe qu'après synalyse('consent', true) ou synalyse('identify', id).
   var distinct = store('synalyse_id');
   var lastUrl = null;
+  var traits; // propriétés de l'utilisateur identifié, jointes aux envois de cette page
 
   function send(event) {
     if (store('synalyse_optout') === '1') return;
@@ -31,6 +32,7 @@
       d: distinct || undefined,
       sw: w.screen && w.screen.width,
       l: navigator.language,
+      tr: distinct ? traits : undefined,
       e: [event]
     });
     // sendBeacon envoie en text/plain : pas de requête préalable CORS, et l'envoi survit au changement de page.
@@ -102,13 +104,15 @@
         record();
       } else {
         distinct = null;
+        traits = undefined;
         store('synalyse_id', null);
         stopRecording();
       }
     },
     // Utilisateur connecté d'une application : identifiant stable fourni par le site.
-    identify: function (id) {
+    identify: function (id, properties) {
       if (!id) return;
+      traits = properties && typeof properties === 'object' ? properties : undefined;
       distinct = 'u:' + String(id);
       store('synalyse_id', distinct);
       record();

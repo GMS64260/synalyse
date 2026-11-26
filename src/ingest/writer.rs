@@ -54,6 +54,16 @@ struct Delta {
     exit_path: Option<String>,
 }
 
+/// Ce qu'un lot apporte à la fiche d'un visiteur identifié.
+struct Seen {
+    distinct: String,
+    first: DateTime<Utc>,
+    last: DateTime<Utc>,
+    first_day: NaiveDate,
+    new_sessions: i32,
+    traits: Option<serde_json::Value>,
+}
+
 #[derive(Default)]
 struct State {
     /// (projet, visiteur) → dernière session connue.
@@ -117,9 +127,25 @@ async fn write_batch(pool: &Pool, state: &mut State, batch: &mut [IngestEvent]) 
 
     let tx = client.transaction().await?;
     let mut deltas: HashMap<(i64, DateTime<Utc>, i64), Delta> = HashMap::new();
+    let mut seen: HashMap<(i64, i64), Seen> = HashMap::new();
     for event in batch.iter() {
-        let session = resolve_session(&tx, state, event).await?;
+        let (session, opened) = resolve_session(&tx, state, event).await?;
         let day = event.ts.with_timezone(&event.tz).date_naive();
+        if let Some(distinct) = &event.distinct {
+            let entry = seen.entry((event.project_id, event.visitor)).or_insert_with(|| Seen {
+                distinct: distinct.clone(),
+                first: event.ts,
+                last: event.ts,
+                first_day: day,
+                new_sessions: 0,
+                traits: None,
+            });
+            entry.last = entry.last.max(event.ts);
+            entry.new_sessions += i32::from(opened);
+            if event.traits.is_some() {
+                entry.traits = event.traits.clone();
+            }
+        }
         let insert = tx
             .prepare_cached(
                 "INSERT INTO events (project_id, ts, session_id, visitor_id, day, kind, name, host, path, title, props)
@@ -168,12 +194,37 @@ async fn write_batch(pool: &Pool, state: &mut State, batch: &mut [IngestEvent]) 
         )
         .await?;
     }
+    let touch = tx
+        .prepare_cached(
+            "INSERT INTO visitors (project_id, id, distinct_id, first_seen, last_seen, first_day, sessions, traits)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, '{}'::jsonb))
+             ON CONFLICT (project_id, id) DO UPDATE SET
+                 first_seen = LEAST(visitors.first_seen, EXCLUDED.first_seen),
+                 last_seen = GREATEST(visitors.last_seen, EXCLUDED.last_seen),
+                 first_day = LEAST(visitors.first_day, EXCLUDED.first_day),
+                 sessions = visitors.sessions + EXCLUDED.sessions,
+                 traits = visitors.traits || EXCLUDED.traits",
+        )
+        .await?;
+    for ((project_id, visitor), s) in &seen {
+        tx.execute(
+            &touch,
+            &[project_id, visitor, &s.distinct, &s.first, &s.last, &s.first_day, &s.new_sessions, &s.traits],
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(())
 }
 
-async fn resolve_session(tx: &Transaction<'_>, state: &mut State, event: &IngestEvent) -> Result<Session, AppError> {
-    let candidates = [Some(event.visitor), event.visitor_prev];
+/// Session de l'événement, et vrai si elle compte comme une nouvelle visite du visiteur
+/// (session créée, ou visite anonyme en cours qui lui est rattachée).
+async fn resolve_session(
+    tx: &Transaction<'_>,
+    state: &mut State,
+    event: &IngestEvent,
+) -> Result<(Session, bool), AppError> {
+    let candidates = [Some(event.visitor), event.fallbacks[0], event.fallbacks[1]];
     for visitor in candidates.into_iter().flatten() {
         let key = (event.project_id, visitor);
         let cached = state.sessions.get(&key).filter(|s| s.accepts(event.ts)).cloned();
@@ -183,12 +234,31 @@ async fn resolve_session(tx: &Transaction<'_>, state: &mut State, event: &Ingest
         };
         if let Some(mut session) = found {
             session.last_at = session.last_at.max(event.ts);
-            state.sessions.insert(key, session.clone());
-            if visitor != event.visitor {
-                // Session ouverte avec le sel de la veille : la retrouver aussi sous l'empreinte du jour.
-                state.sessions.insert((event.project_id, event.visitor), session.clone());
+            let mut adopted = false;
+            if event.identified && session.visitor_id != event.visitor {
+                // Le visiteur vient de donner son accord ou de se connecter : la visite anonyme
+                // qu'il avait commencée devient la sienne, avec ses événements.
+                tx.execute(
+                    "UPDATE sessions SET visitor_id = $4, identified = true
+                      WHERE project_id = $1 AND started_at = $2 AND id = $3",
+                    &[&event.project_id, &session.started_at, &session.id, &event.visitor],
+                )
+                .await?;
+                tx.execute(
+                    "UPDATE events SET visitor_id = $4 WHERE project_id = $1 AND session_id = $2 AND ts >= $3",
+                    &[&event.project_id, &session.id, &session.started_at, &event.visitor],
+                )
+                .await?;
+                state.sessions.remove(&(event.project_id, session.visitor_id));
+                state.sessions.remove(&key);
+                session.visitor_id = event.visitor;
+                adopted = true;
+            } else {
+                state.sessions.insert(key, session.clone());
             }
-            return Ok(session);
+            // Retrouvée sous une autre identité : la retrouver ensuite sous celle de l'événement.
+            state.sessions.insert((event.project_id, event.visitor), session.clone());
+            return Ok((session, adopted));
         }
     }
 
@@ -228,7 +298,7 @@ async fn resolve_session(tx: &Transaction<'_>, state: &mut State, event: &Ingest
     )
     .await?;
     state.sessions.insert((event.project_id, event.visitor), session.clone());
-    Ok(session)
+    Ok((session, true))
 }
 
 async fn find_session(

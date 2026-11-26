@@ -29,6 +29,7 @@ pub const KIND_EVENT: i16 = 1;
 
 const MAX_EVENTS_PER_REQUEST: usize = 50;
 const MAX_PROPS_BYTES: usize = 4096;
+const MAX_TRAITS_BYTES: usize = 2048;
 /// Retard maximal accepté pour un événement envoyé par le navigateur (file d'attente hors ligne).
 const MAX_CLIENT_DELAY_MS: u64 = 3_600_000;
 
@@ -39,10 +40,15 @@ pub struct IngestEvent {
     pub tz: Tz,
     pub ts: DateTime<Utc>,
     pub visitor: i64,
-    /// Empreinte du même visiteur calculée avec le sel de la veille : sert à ne pas
-    /// couper une session en cours au changement de sel, à minuit UTC.
-    pub visitor_prev: Option<i64>,
+    /// Autres identités sous lesquelles une session en cours peut exister : l'empreinte
+    /// calculée avec le sel de la veille (la session ne se coupe pas à minuit UTC) et, pour
+    /// un visiteur qui vient d'être identifié, son empreinte anonyme (sa visite continue).
+    pub fallbacks: [Option<i64>; 2],
     pub identified: bool,
+    /// Identifiant stable tel qu'envoyé, pour la fiche du visiteur. None pour un anonyme.
+    pub distinct: Option<String>,
+    /// Propriétés transmises avec identify.
+    pub traits: Option<serde_json::Value>,
     pub kind: i16,
     pub name: Option<String>,
     pub host: String,
@@ -229,14 +235,19 @@ struct Payload {
     sw: Option<i32>,
     #[serde(default)]
     l: Option<String>,
+    /// Propriétés du visiteur identifié (offre, rôle…).
+    #[serde(default)]
+    tr: Option<serde_json::Value>,
     e: Vec<RawEvent>,
 }
 
 pub struct VisitorContext {
     pub project: Arc<Project>,
     pub visitor: i64,
-    pub visitor_prev: Option<i64>,
+    pub fallbacks: [Option<i64>; 2],
     pub identified: bool,
+    pub distinct: Option<String>,
+    pub traits: Option<serde_json::Value>,
     pub agent: Agent,
     pub lang: Option<String>,
     pub screen_w: Option<i32>,
@@ -244,6 +255,21 @@ pub struct VisitorContext {
 
 pub(crate) fn clip(text: &str, max: usize) -> String {
     text.trim().chars().filter(|c| !c.is_control()).take(max).collect()
+}
+
+/// Propriétés d'un visiteur : un objet de valeurs simples, de taille bornée.
+pub(crate) fn clean_traits(traits: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    let object = traits?.as_object()?.clone();
+    let kept: serde_json::Map<String, serde_json::Value> = object
+        .into_iter()
+        .filter(|(key, value)| {
+            key.chars().count() <= 60 && (value.is_string() || value.is_number() || value.is_boolean())
+        })
+        .take(30)
+        .collect();
+    let value = serde_json::Value::Object(kept);
+    let size = serde_json::to_string(&value).map(|s| s.len()).unwrap_or(usize::MAX);
+    (size > 2 && size <= MAX_TRAITS_BYTES).then_some(value)
 }
 
 fn clip_opt(text: Option<&str>, max: usize) -> Option<String> {
@@ -271,8 +297,10 @@ pub fn build_event(ctx: &VisitorContext, ts: DateTime<Utc>, raw: &RawEvent) -> O
         tz: ctx.project.tz,
         ts,
         visitor: ctx.visitor,
-        visitor_prev: ctx.visitor_prev,
+        fallbacks: ctx.fallbacks,
         identified: ctx.identified,
+        distinct: ctx.distinct.clone(),
+        traits: ctx.traits.clone(),
         kind,
         name,
         acquisition: referrer::classify(&url, raw.r.as_deref()),
@@ -330,25 +358,25 @@ async fn collect_inner(state: &AppState, peer: SocketAddr, headers: &HeaderMap, 
 
     let now = Utc::now();
     let distinct = stable_id(payload.d.as_deref());
-    let (visitor, visitor_prev, identified) = match &distinct {
-        Some(d) => (stable_visitor(project.id, d), None, true),
-        None => {
-            let ip = client_ip(headers, peer, state.config.trusted_proxies);
-            let today = now.date_naive();
-            let salt = state.salts.get(&state.pool, today).await?;
-            let previous = state.salts.get(&state.pool, today.pred_opt().expect("veille")).await?;
-            (
-                fingerprint(&salt, project.id, ip, user_agent),
-                Some(fingerprint(&previous, project.id, ip, user_agent)),
-                false,
-            )
-        }
+    // L'empreinte anonyme est calculée dans tous les cas : pour un visiteur identifié, elle
+    // sert à retrouver la visite qu'il avait commencée avant de l'être.
+    let ip = client_ip(headers, peer, state.config.trusted_proxies);
+    let today = now.date_naive();
+    let salt = state.salts.get(&state.pool, today).await?;
+    let previous = state.salts.get(&state.pool, today.pred_opt().expect("veille")).await?;
+    let anonymous = fingerprint(&salt, project.id, ip, user_agent);
+    let anonymous_prev = fingerprint(&previous, project.id, ip, user_agent);
+    let (visitor, fallbacks) = match &distinct {
+        Some(d) => (stable_visitor(project.id, d), [Some(anonymous), Some(anonymous_prev)]),
+        None => (anonymous, [Some(anonymous_prev), None]),
     };
     let ctx = VisitorContext {
         project,
         visitor,
-        visitor_prev,
-        identified,
+        fallbacks,
+        identified: distinct.is_some(),
+        traits: distinct.as_ref().and(clean_traits(payload.tr)),
+        distinct,
         agent,
         lang: clip_opt(payload.l.as_deref(), 16),
         screen_w: payload.sw.filter(|w| (1..=20_000).contains(w)),
@@ -391,6 +419,18 @@ mod tests {
     }
 
     #[test]
+    fn traits_are_small_flat_objects() {
+        let ok = clean_traits(Some(
+            serde_json::json!({ "offre": "pro", "sièges": 4, "essai": false, "liste": [1], "o": {} }),
+        ));
+        assert_eq!(ok, Some(serde_json::json!({ "offre": "pro", "sièges": 4, "essai": false })));
+        assert_eq!(clean_traits(Some(serde_json::json!(["a"]))), None);
+        assert_eq!(clean_traits(Some(serde_json::json!({}))), None);
+        assert_eq!(clean_traits(Some(serde_json::json!({ "x": "a".repeat(3000) }))), None);
+        assert_eq!(clean_traits(None), None);
+    }
+
+    #[test]
     fn stable_ids() {
         assert_eq!(stable_id(Some("u:42")).as_deref(), Some("u:42"), "utilisateur connecté à identifiant court");
         assert_eq!(stable_id(Some(" 123e4567-e89b ")).as_deref(), Some("123e4567-e89b"));
@@ -420,8 +460,10 @@ mod tests {
                 recording: RecordingSettings::default(),
             }),
             visitor: 1,
-            visitor_prev: None,
+            fallbacks: [None, None],
             identified: false,
+            distinct: None,
+            traits: None,
             agent: ua::parse("Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36"),
             lang: None,
             screen_w: None,

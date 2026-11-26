@@ -25,8 +25,10 @@ test('un autre navigateur est un autre visiteur ; un identifiant stable aussi', 
   const project = await newProject(cookie);
   await track(project.public_key, [page('/')]);
   await track(project.public_key, [page('/')], { ua: BROWSER.replace('Chrome/130', 'Chrome/131') });
-  await track(project.public_key, [page('/')], { distinct: 'b6f1c2e0-0000-4000-8000-000000000001' });
-  await track(project.public_key, [page('/a')], { distinct: 'b6f1c2e0-0000-4000-8000-000000000001' });
+  // Sur un troisième navigateur : avec le même, la visite anonyme en cours lui serait rattachée (voir people.test.mjs).
+  const other = { ua: BROWSER.replace('Chrome/130', 'Chrome/132'), distinct: 'b6f1c2e0-0000-4000-8000-000000000001' };
+  await track(project.public_key, [page('/')], other);
+  await track(project.public_key, [page('/a')], other);
   const s = await eventually(() => summary(cookie, project.id), (x) => x.pageviews === 4);
   assert.deepEqual({ sessions: s.sessions, visitors: s.visitors, pageviews: s.pageviews }, { sessions: 3, visitors: 3, pageviews: 4 });
 });
@@ -63,6 +65,6 @@ test('le traceur est servi avec le bon type et peut être mis en cache', async (
   assert.match(res.headers.get('content-type'), /javascript/);
   assert.match(res.headers.get('cache-control'), /max-age/);
   const js = await res.text();
-  assert.ok(js.includes('sendBeacon') && js.length < 6000, 'le traceur reste petit');
+  assert.ok(js.includes('sendBeacon') && js.length < 8000, 'le traceur reste petit');
   new Function(js); // syntaxe valide
 });

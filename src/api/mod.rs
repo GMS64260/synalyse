@@ -1,6 +1,7 @@
 //! API JSON de l'interface et des intégrations.
 
 mod account;
+mod people;
 mod product;
 mod projects;
 mod recordings;
@@ -30,6 +31,10 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{project_id}/funnels/{funnel_id}", put(product::update_funnel).delete(product::delete_funnel))
         .route("/projects/{project_id}/funnels/{funnel_id}/report", get(product::funnel_report))
         .route("/projects/{project_id}/paths", get(product::paths))
+        .route("/projects/{project_id}/retention", get(people::retention))
+        .route("/projects/{project_id}/visitors", get(people::list))
+        .route("/projects/{project_id}/visitors/{visitor_id}", get(people::get))
+        .route("/projects/{project_id}/visitors/{visitor_id}/events", get(people::events))
         .route("/projects/{project_id}/recordings", get(recordings::list))
         .route("/projects/{project_id}/recordings/{recording_id}", get(recordings::get).delete(recordings::delete))
         .route("/projects/{project_id}/recordings/{recording_id}/events", get(recordings::events))

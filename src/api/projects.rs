@@ -243,6 +243,11 @@ pub struct ImportEvent {
     ts: i64,
     /// Identifiant du visiteur dans le système d'origine ; il est haché, jamais stocké.
     visitor: String,
+    /// Identifiant d'utilisateur connu du site : le visiteur est alors un utilisateur identifié.
+    #[serde(default)]
+    user: Option<String>,
+    #[serde(default)]
+    traits: Option<Value>,
     #[serde(default)]
     ua: Option<String>,
     #[serde(default)]
@@ -288,11 +293,17 @@ pub async fn import(
     for item in &body.events {
         let agent = ua::parse(item.ua.as_deref().unwrap_or(""));
         let built = DateTime::<Utc>::from_timestamp_millis(item.ts).and_then(|ts| {
+            let distinct = ingest::stable_id(item.user.as_ref().map(|u| format!("u:{u}")).as_deref());
             let ctx = VisitorContext {
                 project: project.clone(),
-                visitor: ingest::stable_visitor(project_id, &format!("import:{}", item.visitor)),
-                visitor_prev: None,
-                identified: false,
+                visitor: match &distinct {
+                    Some(d) => ingest::stable_visitor(project_id, d),
+                    None => ingest::stable_visitor(project_id, &format!("import:{}", item.visitor)),
+                },
+                fallbacks: [None, None],
+                identified: distinct.is_some(),
+                traits: distinct.as_ref().and(ingest::clean_traits(item.traits.clone())),
+                distinct,
                 agent,
                 lang: item.lang.clone().filter(|l| l.len() <= 16),
                 screen_w: item.screen_w.filter(|w| (1..=20_000).contains(w)),

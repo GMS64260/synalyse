@@ -10,6 +10,7 @@ const MIGRATIONS: &[(i32, &str, &str)] = &[
     (1, "init", include_str!("../migrations/0001_init.sql")),
     (2, "funnels", include_str!("../migrations/0002_funnels.sql")),
     (3, "recordings", include_str!("../migrations/0003_recordings.sql")),
+    (4, "visitors", include_str!("../migrations/0004_visitors.sql")),
 ];
 
 /// Verrou consultatif : un seul serveur migre à la fois quand plusieurs démarrent ensemble.

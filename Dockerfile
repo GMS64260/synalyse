@@ -5,6 +5,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
 COPY tracker ./tracker
+COPY web ./web
+COPY vendor ./vendor
 RUN cargo build --release --locked
 
 FROM debian:trixie-slim

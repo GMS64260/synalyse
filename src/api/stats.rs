@@ -18,37 +18,37 @@ use crate::error::AppError;
 const MAX_RANGE_DAYS: i64 = 800;
 
 /// Requête SQL en construction, avec ses paramètres numérotés.
-struct Sql {
-    text: String,
-    params: Vec<Box<dyn ToSql + Sync + Send>>,
+pub(super) struct Sql {
+    pub text: String,
+    pub params: Vec<Box<dyn ToSql + Sync + Send>>,
 }
 
 impl Sql {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self { text: String::new(), params: Vec::new() }
     }
 
     /// Enregistre une valeur et renvoie son repère (`$1`, `$2`…). Aucune valeur
     /// venue de la requête HTTP n'est jamais écrite dans le texte SQL.
-    fn bind<T: ToSql + Sync + Send + 'static>(&mut self, value: T) -> String {
+    pub fn bind<T: ToSql + Sync + Send + 'static>(&mut self, value: T) -> String {
         self.params.push(Box::new(value));
         format!("${}", self.params.len())
     }
 
-    fn refs(&self) -> Vec<&(dyn ToSql + Sync)> {
+    pub fn refs(&self) -> Vec<&(dyn ToSql + Sync)> {
         self.params.iter().map(|p| p.as_ref() as &(dyn ToSql + Sync)).collect()
     }
 }
 
 /// Période demandée et bornes UTC élargies, qui ne servent qu'à écarter les partitions hors période.
-struct Period {
-    from: NaiveDate,
-    to: NaiveDate,
-    lower: DateTime<Utc>,
-    upper: DateTime<Utc>,
+pub(super) struct Period {
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    pub lower: DateTime<Utc>,
+    pub upper: DateTime<Utc>,
 }
 
-fn parse_period(query: &HashMap<String, String>) -> Result<Period, AppError> {
+pub(super) fn parse_period(query: &HashMap<String, String>) -> Result<Period, AppError> {
     let day = |key: &str| -> Result<NaiveDate, AppError> {
         query
             .get(key)
@@ -83,7 +83,7 @@ const TEXT_FILTERS: &[(&str, &str)] = &[
 const INT_FILTERS: &[(&str, &str)] = &[("channel", "channel"), ("device", "device")];
 
 /// Écrit la clause WHERE sur `sessions s` : projet, période et filtres.
-fn session_where(
+pub(super) fn session_where(
     sql: &mut Sql,
     project_id: i64,
     period: &Period,

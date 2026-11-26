@@ -1,5 +1,6 @@
 //! Synalyse — mesure d'audience et analyse produit auto-hébergées.
 
+mod analysis;
 mod api;
 mod auth;
 mod config;

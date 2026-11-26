@@ -1,12 +1,13 @@
 //! API JSON de l'interface et des intégrations.
 
 mod account;
+mod product;
 mod projects;
 mod stats;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 
 use crate::AppState;
 
@@ -23,4 +24,9 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{project_id}/stats/summary", get(stats::summary))
         .route("/projects/{project_id}/stats/breakdown", get(stats::breakdown))
         .route("/projects/{project_id}/stats/realtime", get(stats::realtime))
+        .route("/projects/{project_id}/funnels", get(product::list_funnels).post(product::create_funnel))
+        .route("/projects/{project_id}/funnels/preview", post(product::preview_funnel))
+        .route("/projects/{project_id}/funnels/{funnel_id}", put(product::update_funnel).delete(product::delete_funnel))
+        .route("/projects/{project_id}/funnels/{funnel_id}/report", get(product::funnel_report))
+        .route("/projects/{project_id}/paths", get(product::paths))
 }

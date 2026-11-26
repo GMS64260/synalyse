@@ -6,7 +6,10 @@ use tokio_postgres::NoTls;
 
 use crate::error::AppError;
 
-const MIGRATIONS: &[(i32, &str, &str)] = &[(1, "init", include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i32, &str, &str)] = &[
+    (1, "init", include_str!("../migrations/0001_init.sql")),
+    (2, "funnels", include_str!("../migrations/0002_funnels.sql")),
+];
 
 /// Verrou consultatif : un seul serveur migre à la fois quand plusieurs démarrent ensemble.
 const MIGRATION_LOCK: i64 = 0x0043_4149_524E_454F;

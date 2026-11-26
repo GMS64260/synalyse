@@ -44,6 +44,8 @@ pub enum Principal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Need {
     Read,
+    /// Créer ou modifier des objets d'analyse (entonnoirs…) : à partir du rôle member.
+    Write,
     Ingest,
     Admin,
 }
@@ -60,6 +62,7 @@ impl Principal {
 fn role_allows(role: &str, need: Need) -> bool {
     match need {
         Need::Read => matches!(role, "owner" | "admin" | "member" | "viewer"),
+        Need::Write => matches!(role, "owner" | "admin" | "member"),
         Need::Ingest | Need::Admin => matches!(role, "owner" | "admin"),
     }
 }
@@ -212,6 +215,9 @@ mod tests {
     #[test]
     fn rights_matrix() {
         assert!(role_allows("viewer", Need::Read));
+        assert!(!role_allows("viewer", Need::Write));
+        assert!(role_allows("member", Need::Write));
+        assert!(!scope_allows(Scope::Read, Need::Write), "un jeton de lecture ne modifie rien");
         assert!(!role_allows("viewer", Need::Admin));
         assert!(!role_allows("member", Need::Ingest));
         assert!(role_allows("admin", Need::Admin));

@@ -9,10 +9,11 @@ use crate::error::AppError;
 const MIGRATIONS: &[(i32, &str, &str)] = &[
     (1, "init", include_str!("../migrations/0001_init.sql")),
     (2, "funnels", include_str!("../migrations/0002_funnels.sql")),
+    (3, "recordings", include_str!("../migrations/0003_recordings.sql")),
 ];
 
 /// Verrou consultatif : un seul serveur migre à la fois quand plusieurs démarrent ensemble.
-const MIGRATION_LOCK: i64 = 0x0043_4149_524E_454F;
+const MIGRATION_LOCK: i64 = 0x5359_4E41_4C59_5345;
 
 pub fn connect(database_url: &str) -> Result<Pool, String> {
     let mut config: tokio_postgres::Config =

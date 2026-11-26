@@ -14,9 +14,10 @@ use crate::auth::{self, Need, Principal, Scope};
 use crate::error::AppError;
 use crate::ids;
 use crate::ingest::{self, RawEvent, VisitorContext, writer::Msg};
+use crate::recording::RecordingSettings;
 use crate::ua;
 
-const PROJECT_COLUMNS: &str = "id, org_id, name, public_key, timezone, domains, created_at";
+const PROJECT_COLUMNS: &str = "id, org_id, name, public_key, timezone, domains, created_at, settings";
 
 fn project_json(row: &Row) -> Value {
     json!({
@@ -27,6 +28,7 @@ fn project_json(row: &Row) -> Value {
         "timezone": row.get::<_, String>(4),
         "domains": row.get::<_, Vec<String>>(5),
         "created_at": row.get::<_, DateTime<Utc>>(6),
+        "recording": RecordingSettings::from_settings(&row.get::<_, Value>(7)),
     })
 }
 
@@ -130,6 +132,8 @@ pub struct ProjectPatch {
     timezone: Option<String>,
     #[serde(default)]
     domains: Option<Vec<String>>,
+    #[serde(default)]
+    recording: Option<RecordingSettings>,
 }
 
 pub async fn update(
@@ -143,13 +147,17 @@ pub async fn update(
     let name = body.name.as_deref().map(clean_name).transpose()?;
     let timezone = body.timezone.as_deref().map(clean_timezone).transpose()?;
     let domains = body.domains.as_deref().map(clean_domains).transpose()?;
+    let recording = body.recording.map(|r| serde_json::to_value(r.clamped()).expect("réglages sérialisables"));
     let row = client
         .query_one(
             &format!(
-                "UPDATE projects SET name = COALESCE($2, name), timezone = COALESCE($3, timezone), domains = COALESCE($4, domains)
+                "UPDATE projects SET name = COALESCE($2, name), timezone = COALESCE($3, timezone),
+                        domains = COALESCE($4, domains),
+                        settings = CASE WHEN $5::jsonb IS NULL THEN settings
+                                        ELSE jsonb_set(settings, '{{recording}}', $5::jsonb) END
                   WHERE id = $1 RETURNING {PROJECT_COLUMNS}"
             ),
-            &[&project_id, &name, &timezone, &domains],
+            &[&project_id, &name, &timezone, &domains, &recording],
         )
         .await?;
     state.projects.invalidate();
@@ -193,7 +201,7 @@ pub async fn create_token(
     auth::authorize_project(&client, &principal, project_id, Need::Admin).await?;
     let name = clean_name(&body.name)?;
     Scope::parse(&body.scope).ok_or_else(|| AppError::bad("Portée inconnue : read, ingest ou admin."))?;
-    let token = format!("crn_{}", ids::random_token());
+    let token = format!("syn_{}", ids::random_token());
     let created_by = principal.user_id().ok();
     let row = client
         .query_one(
@@ -264,6 +272,7 @@ pub async fn import(
         id: project_id,
         tz: timezone.parse().unwrap_or(chrono_tz::UTC),
         domains: row.get(1),
+        recording: RecordingSettings::default(),
     });
 
     let (mut accepted, mut rejected) = (0usize, 0usize);

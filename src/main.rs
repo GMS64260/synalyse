@@ -8,6 +8,7 @@ mod db;
 mod error;
 mod ids;
 mod ingest;
+mod recording;
 mod referrer;
 mod ua;
 mod web;
@@ -48,7 +49,8 @@ Configuration (variables d'environnement) :
   SYNALYSE_DATABASE_URL     postgres://utilisateur:motdepasse@hote/base   (obligatoire)
   SYNALYSE_LISTEN           adresse d'écoute, 127.0.0.1:8292 par défaut
   SYNALYSE_BASE_URL         adresse publique du service
-  SYNALYSE_TRUSTED_PROXIES  nombre de mandataires de confiance devant le service (0 par défaut)";
+  SYNALYSE_TRUSTED_PROXIES  nombre de mandataires de confiance devant le service (0 par défaut)
+  SYNALYSE_DATA_DIR         dossier des enregistrements de session, ./data par défaut";
 
 #[tokio::main]
 async fn main() {
@@ -141,14 +143,28 @@ async fn health(State(state): State<AppState>) -> Result<&'static str, AppError>
     Ok("ok")
 }
 
-async fn tracker() -> Response {
-    let mut response = include_str!("../tracker/c.js").into_response();
+fn script(body: String) -> Response {
+    let mut response = body.into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/javascript; charset=utf-8"));
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=3600"));
     headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     headers.insert("cross-origin-resource-policy", HeaderValue::from_static("cross-origin"));
     response
+}
+
+async fn tracker() -> Response {
+    script(include_str!("../tracker/c.js").to_string())
+}
+
+/// Enregistreur de session : `rrweb` (MIT) suivi du code de Synalyse qui le pilote.
+/// Chargé par le traceur seulement quand le projet enregistre et que le visiteur y a consenti.
+async fn recorder() -> Response {
+    script(format!(
+        "/*! rrweb — licence MIT, https://github.com/rrweb-io/rrweb */\n{};\n{}",
+        include_str!("../vendor/rrweb/record.min.js"),
+        include_str!("../tracker/r.js")
+    ))
 }
 
 async fn not_found() -> Response {
@@ -165,6 +181,16 @@ fn app(state: AppState) -> Router {
         .nest("/api", api::router())
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(64 * 1024))
+        // Après la limite générale : ces routes gardent la leur.
+        .route("/r.js", get(recorder))
+        .route("/r/config", get(recording::config).options(recording::preflight))
+        .route(
+            "/r",
+            post(recording::collect)
+                .options(recording::preflight)
+                .layer(DefaultBodyLimit::max(recording::MAX_WIRE_BYTES)),
+        )
+        .route("/player", get(web::player))
         .with_state(state)
 }
 
@@ -188,6 +214,7 @@ async fn serve() -> Result<(), String> {
     let (writer, inbox) = mpsc::channel(20_000);
     let writer_task = tokio::spawn(ingest::writer::run(pool.clone(), inbox));
     let listen = config.listen;
+    tokio::spawn(recording::purge_loop(pool.clone(), config.data_dir.clone()));
     let state = AppState {
         pool,
         config: Arc::new(config),

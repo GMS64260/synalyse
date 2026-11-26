@@ -5,7 +5,8 @@
   if (!script) return;
   var key = script.getAttribute('data-key');
   if (!key) return;
-  var api = script.getAttribute('data-api') || new URL(script.src, location.href).origin + '/i';
+  var origin = new URL(script.src, location.href).origin;
+  var api = script.getAttribute('data-api') || origin + '/i';
   var manual = script.hasAttribute('data-manual');
 
   function store(name, value) {
@@ -47,6 +48,28 @@
     send({ t: 'pageview', u: url, r: referrer || undefined, ti: d.title || undefined });
   }
 
+  // Enregistrement de session : seulement pour un visiteur qui porte un identifiant stable
+  // (consentement donné ou utilisateur connecté), et si le projet l'a activé. L'enregistreur
+  // est un fichier à part, chargé à ce moment-là : les autres visiteurs ne le téléchargent jamais.
+  var recorder = 0;
+  function record() {
+    if (recorder || !distinct || !w.fetch || store('synalyse_optout') === '1') return;
+    recorder = 1;
+    fetch(origin + '/r/config?k=' + encodeURIComponent(key)).then(function (res) { return res.json(); }).then(function (cfg) {
+      if (!cfg || !cfg.record || !distinct) { recorder = 0; return; }
+      w.synalyse.rec = { key: key, url: origin + '/r', cfg: cfg, id: function () { return distinct; } };
+      var el = d.createElement('script');
+      el.src = origin + '/r.js';
+      el.async = true;
+      d.head.appendChild(el);
+    }).catch(function () { recorder = 0; });
+  }
+  function stopRecording() {
+    recorder = 0;
+    if (w.synalyse.rec && w.synalyse.rec.stop) w.synalyse.rec.stop();
+    w.synalyse.rec = null;
+  }
+
   function newId() {
     if (w.crypto && w.crypto.randomUUID) return w.crypto.randomUUID();
     return 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
@@ -62,9 +85,11 @@
       if (granted) {
         if (!distinct) distinct = newId();
         store('synalyse_id', distinct);
+        record();
       } else {
         distinct = null;
         store('synalyse_id', null);
+        stopRecording();
       }
     },
     // Utilisateur connecté d'une application : identifiant stable fourni par le site.
@@ -72,10 +97,12 @@
       if (!id) return;
       distinct = 'u:' + String(id);
       store('synalyse_id', distinct);
+      record();
     },
     // Opposition du visiteur à toute mesure.
     optout: function (on) {
       store('synalyse_optout', on === false ? null : '1');
+      if (on === false) record(); else stopRecording();
     }
   };
 
@@ -85,6 +112,7 @@
     if (fn) return fn.apply(null, Array.prototype.slice.call(arguments, 1));
   };
   for (var i = 0; i < queued.length; i++) w.synalyse.apply(null, queued[i]);
+  record();
 
   if (!manual) {
     // Applications à page unique : chaque changement d'URL compte comme une page vue.

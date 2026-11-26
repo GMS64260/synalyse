@@ -19,13 +19,35 @@ const ASSETS: &[Asset] = &[
     Asset { path: "index.html", mime: "text/html; charset=utf-8", bytes: include_bytes!("../web/index.html") },
     Asset { path: "app.css", mime: "text/css; charset=utf-8", bytes: include_bytes!("../web/app.css") },
     Asset { path: "app.js", mime: "text/javascript; charset=utf-8", bytes: include_bytes!("../web/app.js") },
-    Asset { path: "cairn.svg", mime: "image/svg+xml", bytes: include_bytes!("../web/cairn.svg") },
+    Asset { path: "logo.svg", mime: "image/svg+xml", bytes: include_bytes!("../web/logo.svg") },
+    Asset { path: "player.html", mime: "text/html; charset=utf-8", bytes: include_bytes!("../web/player.html") },
+    Asset { path: "player.css", mime: "text/css; charset=utf-8", bytes: include_bytes!("../web/player.css") },
+    Asset { path: "player.js", mime: "text/javascript; charset=utf-8", bytes: include_bytes!("../web/player.js") },
+    Asset {
+        path: "replay.min.js",
+        mime: "text/javascript; charset=utf-8",
+        bytes: include_bytes!("../vendor/rrweb/replay.min.js"),
+    },
+    Asset {
+        path: "replay.min.css",
+        mime: "text/css; charset=utf-8",
+        bytes: include_bytes!("../vendor/rrweb/replay.min.css"),
+    },
     Asset { path: "manrope.woff2", mime: "font/woff2", bytes: include_bytes!("../web/fonts/manrope.woff2") },
 ];
 
 /// Politique de sécurité de l'interface : aucun contenu tiers, aucun script ni style en ligne.
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; \
-                   connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+                   connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+/// Politique du lecteur d'enregistrements, page à part affichée dans un cadre de l'interface.
+/// Une page rejouée recharge ses images, ses polices et ses feuilles de style depuis le site
+/// d'origine et porte des styles en ligne : ces sources sont ouvertes ici, et ici seulement.
+/// Aucun script hors des nôtres ne s'exécute, où que ce soit.
+const PLAYER_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https: http:; \
+                          img-src 'self' data: blob: https: http:; font-src 'self' data: https: http:; \
+                          media-src https: http: data: blob:; connect-src 'self'; frame-src 'self'; base-uri 'none'; \
+                          form-action 'none'; frame-ancestors 'self'";
 
 async fn serve(name: &str, request: &HeaderMap) -> Response {
     let Some(asset) = ASSETS.iter().find(|a| a.path == name) else {
@@ -35,6 +57,7 @@ async fn serve(name: &str, request: &HeaderMap) -> Response {
     let disk = match std::env::var("SYNALYSE_WEB_DIR") {
         Ok(dir) => {
             let file = if name == "manrope.woff2" { "fonts/manrope.woff2" } else { name };
+            // Les fichiers de `vendor/` ne sont pas dans ce dossier : la copie embarquée sert.
             tokio::fs::read(std::path::Path::new(&dir).join(file)).await.ok()
         }
         Err(_) => None,
@@ -55,6 +78,11 @@ async fn serve(name: &str, request: &HeaderMap) -> Response {
         headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("same-origin"));
         headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     }
+    if name == "player.html" {
+        headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(PLAYER_CSP));
+        headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+        headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+    }
     response
 }
 
@@ -62,8 +90,12 @@ pub async fn index(headers: HeaderMap) -> Response {
     serve("index.html", &headers).await
 }
 
+pub async fn player(headers: HeaderMap) -> Response {
+    serve("player.html", &headers).await
+}
+
 pub async fn asset(Path(name): Path<String>, headers: HeaderMap) -> Response {
-    if name == "index.html" {
+    if name == "index.html" || name == "player.html" {
         return StatusCode::NOT_FOUND.into_response();
     }
     serve(&name, &headers).await

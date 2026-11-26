@@ -10,10 +10,12 @@ COPY vendor ./vendor
 RUN cargo build --release --locked
 
 FROM debian:trixie-slim
-RUN useradd --system --uid 10001 --no-create-home synalyse
+RUN useradd --system --uid 10001 --no-create-home synalyse \
+    && install -d -o synalyse -g synalyse /var/lib/synalyse
 COPY --from=build /src/target/release/synalyse /usr/local/bin/synalyse
 USER synalyse
-ENV SYNALYSE_LISTEN=0.0.0.0:8292
+ENV SYNALYSE_LISTEN=0.0.0.0:8292 SYNALYSE_DATA_DIR=/var/lib/synalyse
+VOLUME /var/lib/synalyse
 EXPOSE 8292
 ENTRYPOINT ["synalyse"]
 CMD ["serve"]

@@ -3,6 +3,7 @@
 mod account;
 mod product;
 mod projects;
+mod recordings;
 mod stats;
 
 use axum::Router;
@@ -29,4 +30,7 @@ pub fn router() -> Router<AppState> {
         .route("/projects/{project_id}/funnels/{funnel_id}", put(product::update_funnel).delete(product::delete_funnel))
         .route("/projects/{project_id}/funnels/{funnel_id}/report", get(product::funnel_report))
         .route("/projects/{project_id}/paths", get(product::paths))
+        .route("/projects/{project_id}/recordings", get(recordings::list))
+        .route("/projects/{project_id}/recordings/{recording_id}", get(recordings::get).delete(recordings::delete))
+        .route("/projects/{project_id}/recordings/{recording_id}/events", get(recordings::events))
 }

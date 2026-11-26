@@ -11,6 +11,8 @@ pub struct Config {
     /// Nombre de mandataires de confiance devant le service. 0 : l'adresse du
     /// visiteur est celle de la connexion ; 1 : c'est la dernière de `X-Forwarded-For`.
     pub trusted_proxies: usize,
+    /// Dossier des fichiers écrits par le serveur (enregistrements de session).
+    pub data_dir: std::path::PathBuf,
 }
 
 impl Config {
@@ -22,7 +24,8 @@ impl Config {
         let base_url = env_or("SYNALYSE_BASE_URL", "http://localhost:8292").trim_end_matches('/').to_string();
         let proxies = env_or("SYNALYSE_TRUSTED_PROXIES", "0");
         let trusted_proxies = proxies.parse().map_err(|_| format!("SYNALYSE_TRUSTED_PROXIES invalide : {proxies}"))?;
-        Ok(Self { listen, database_url, base_url, trusted_proxies })
+        let data_dir = env_or("SYNALYSE_DATA_DIR", "./data").into();
+        Ok(Self { listen, database_url, base_url, trusted_proxies, data_dir })
     }
 
     pub fn secure_cookies(&self) -> bool {

@@ -20,6 +20,7 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::error::AppError;
 use crate::ids;
+use crate::recording::RecordingSettings;
 use crate::referrer::{self, Acquisition};
 use crate::ua::{self, Agent};
 
@@ -59,6 +60,7 @@ pub struct Project {
     pub id: i64,
     pub tz: Tz,
     pub domains: Vec<String>,
+    pub recording: RecordingSettings,
 }
 
 impl Project {
@@ -94,13 +96,18 @@ impl ProjectCache {
         let client = pool.get().await?;
         let row = client
             .query_opt(
-                "SELECT id, timezone, domains FROM projects WHERE public_key = $1 AND archived_at IS NULL",
+                "SELECT id, timezone, domains, settings FROM projects WHERE public_key = $1 AND archived_at IS NULL",
                 &[&key],
             )
             .await?;
         let project = row.map(|row| {
             let tz: String = row.get(1);
-            Arc::new(Project { id: row.get(0), tz: tz.parse().unwrap_or(chrono_tz::UTC), domains: row.get(2) })
+            Arc::new(Project {
+                id: row.get(0),
+                tz: tz.parse().unwrap_or(chrono_tz::UTC),
+                domains: row.get(2),
+                recording: RecordingSettings::from_settings(&row.get::<_, serde_json::Value>(3)),
+            })
         });
         let mut entries = self.entries.write().expect("verrou du cache");
         if entries.len() > 10_000 {
@@ -226,7 +233,7 @@ pub struct VisitorContext {
     pub screen_w: Option<i32>,
 }
 
-fn clip(text: &str, max: usize) -> String {
+pub(crate) fn clip(text: &str, max: usize) -> String {
     text.trim().chars().filter(|c| !c.is_control()).take(max).collect()
 }
 
@@ -392,6 +399,7 @@ mod tests {
                 id: 1,
                 tz: chrono_tz::Europe::Paris,
                 domains: domains.iter().map(|d| d.to_string()).collect(),
+                recording: RecordingSettings::default(),
             }),
             visitor: 1,
             visitor_prev: None,

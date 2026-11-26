@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>Lecture d'un enregistrement — Synalyse</title>
+<link rel="stylesheet" href="/assets/replay.min.css">
+<link rel="stylesheet" href="/assets/player.css">
+</head>
+<body>
+<div id="stage" class="stage" aria-label="Page rejouée"><p id="status" class="status" role="status">Chargement de l'enregistrement…</p></div>
+<div id="controls" class="controls" hidden>
+  <button id="toggle" type="button" class="play">Lire</button>
+  <span id="clock" class="clock" aria-live="off">0:00 / 0:00</span>
+  <div class="track">
+    <div id="marks" class="marks" aria-hidden="true"></div>
+    <input id="seek" type="range" min="0" max="1000" step="1" value="0" aria-label="Position dans l'enregistrement">
+  </div>
+  <label class="field"><span class="sr-only">Vitesse de lecture</span>
+    <select id="speed" name="speed">
+      <option value="1">×1</option><option value="2">×2</option><option value="4">×4</option><option value="8">×8</option>
+    </select>
+  </label>
+  <label class="check"><input id="skip" type="checkbox" checked> Sauter les temps morts</label>
+</div>
+<script src="/assets/replay.min.js"></script>
+<script src="/assets/player.js"></script>
+</body>
+</html>

@@ -52,7 +52,7 @@ function svg(tag, attrs = {}, ...children) {
   return el;
 }
 
-function cairn() {
+function logoMark() {
   return svg('svg', { viewBox: '0 0 32 32', 'aria-hidden': 'true' },
     svg('rect', { class: 'stone', x: 3, y: 21, width: 26, height: 8, rx: 4 }),
     svg('rect', { class: 'stone', x: 7, y: 12, width: 18, height: 7, rx: 3.5 }),
@@ -159,10 +159,11 @@ function render() {
   if (route.sub === 'installation') return renderInstall(project);
   if (route.sub === 'entonnoirs') return renderFunnels(project, route.params);
   if (route.sub === 'parcours') return renderPaths(project, route.params);
+  if (route.sub === 'enregistrements') return renderRecordings(project, route.params);
   renderDashboard(project, route.params);
 }
 
-const brand = () => h('a', { class: 'brand', href: '#', translate: 'no' }, cairn(), h('span', { text: 'Synalyse' }));
+const brand = () => h('a', { class: 'brand', href: '#', translate: 'no' }, logoMark(), h('span', { text: 'Synalyse' }));
 
 // ——— Connexion ———
 
@@ -256,10 +257,10 @@ async function renderInstall(summary) {
 
 // ——— Cadre commun aux écrans d'un site : barre du haut, sections, période, filtres ———
 
-const SECTIONS = [['', 'Audience'], ['entonnoirs', 'Entonnoirs'], ['parcours', 'Parcours']];
+const SECTIONS = [['', 'Audience'], ['entonnoirs', 'Entonnoirs'], ['parcours', 'Parcours'], ['enregistrements', 'Enregistrements']];
 const SHARED_PARAMS = ['period', 'from', 'to', ...Object.keys(FILTER_NAMES)];
 
-function shell(project, params, section) {
+function shell(project, params, section, { dated = true } = {}) {
   const token = ++renderToken;
   const period = resolvePeriod(params, project.timezone);
   const filters = Object.keys(FILTER_NAMES).filter((key) => params.has(key)).map((key) => [key, params.get(key)]);
@@ -294,7 +295,7 @@ function shell(project, params, section) {
     ? h('select', { class: 'field site', 'aria-label': 'Site', onchange: (e) => go(`p/${e.target.value}${section ? '/' + section : ''}`, new URLSearchParams([...shared()].filter(([key]) => ['period', 'from', 'to'].includes(key)))) },
       me.projects.map((p) => h('option', { value: p.id, text: p.name, selected: p.id === project.id })))
     : h('strong', { text: project.name });
-  const topbar = h('header', { class: 'topbar' }, brand(), projectPicker, live, h('span', { class: 'spacer' }), ...custom, periodSelect,
+  const topbar = h('header', { class: 'topbar' }, brand(), projectPicker, live, h('span', { class: 'spacer' }), ...(dated ? [...custom, periodSelect] : []),
     h('details', { class: 'menu' }, h('summary', { class: 'field', text: 'Réglages' }), h('div', { class: 'menu-items' },
       h('a', { href: `#${pathOf('installation')}`, text: 'Installer le code de suivi' }),
       h('a', { href: '#new', text: 'Ajouter un site' }),
@@ -754,6 +755,141 @@ function drawPaths(container, data, onPick) {
     }
   });
   container.replaceChildren(root);
+}
+
+// ——— Enregistrements de session ———
+
+const fullDate = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const megabytes = (bytes) => (bytes < 104858 ? `${nf.format(Math.ceil(bytes / 1024))} Ko` : `${new Intl.NumberFormat('fr-FR', { maximumFractionDigits: bytes < 10485760 ? 1 : 0 }).format(bytes / 1048576)} Mo`);
+const recordingPlace = (rec) => [DEVICES[rec.device], rec.browser, rec.os].filter((part) => part && part !== 'Inconnu').join(', ');
+
+async function renderRecordings(project, params) {
+  const ctx = shell(project, params, 'enregistrements', { dated: false });
+  const body = h('div', {}, h('p', { class: 'empty', text: 'Chargement…' }));
+  ctx.show(body);
+  const selected = params.get('rec');
+  try {
+    if (selected) {
+      const rec = await api(`${ctx.root}/recordings/${encodeURIComponent(selected)}`);
+      if (!ctx.stale()) body.replaceChildren(...recordingPlayer(ctx, rec).filter(Boolean));
+      return;
+    }
+    const minActive = [0, 10, 60].includes(Number(params.get('actif'))) ? Number(params.get('actif')) : 0;
+    const visitor = /^\d+$/.test(params.get('visiteur') || '') ? params.get('visiteur') : '';
+    const [settings, list] = await Promise.all([
+      api(ctx.root),
+      api(`${ctx.root}/recordings?limit=50&min_active=${minActive}${visitor ? '&visitor=' + visitor : ''}`),
+    ]);
+    if (ctx.stale()) return;
+    body.replaceChildren(...recordingList(ctx, settings.recording, list, minActive, visitor).filter(Boolean));
+  } catch (error) {
+    ctx.fail(body)(error);
+  }
+}
+
+function recordingList(ctx, settings, list, minActive, visitor) {
+  const form = recordingSettings(ctx, settings);
+  if (!list.total) {
+    return [h('section', { class: 'slab blank' },
+      h('h2', { class: 'blank-title', text: settings.enabled ? 'Aucun enregistrement pour l\'instant' : 'Revoyez une visite comme si vous y étiez' }),
+      h('p', { text: settings.enabled
+        ? 'Les enregistrements sont activés. Une visite apparaît ici dès que le visiteur a donné son accord, ou qu\'un utilisateur connecté est identifié par votre application.'
+        : 'Un enregistrement rejoue ce que le visiteur a vu et fait : souris, clics, défilement, navigation. Ce qu\'il saisit dans un champ n\'est jamais capté.' }),
+      h('p', { text: 'Seuls sont enregistrés les visiteurs qui y ont consenti : votre site appelle synalyse(\'consent\', true) après leur accord, ou synalyse(\'identify\', identifiant) pour un utilisateur connecté.' })), form];
+  }
+  const filter = h('select', { class: 'field', 'aria-label': 'Durée d\'activité', onchange: (e) => ctx.update({ actif: e.target.value === '0' ? null : e.target.value }) },
+    [[0, 'Toutes les durées'], [10, 'Au moins 10 s d\'activité'], [60, 'Au moins 1 min d\'activité']].map(([value, label]) => h('option', { value, text: label, selected: value === minActive })));
+  const rows = list.recordings.map((rec) => h('li', {}, h('a', { class: 'rec', href: ctx.href({ rec: rec.id }) },
+    h('span', { class: 'rec-when', text: fullDate.format(new Date(rec.started_at)) }),
+    h('span', { class: 'rec-page', text: rec.entry_path || '/', title: rec.entry_host + rec.entry_path }),
+    h('span', { class: 'rec-fig' }, h('strong', { text: duration(rec.active_ms / 1000) }), ` actif sur ${duration(rec.duration_ms / 1000)}`),
+    h('span', { class: 'rec-fig', text: `${nf.format(rec.pages)} ${rec.pages > 1 ? 'pages' : 'page'}, ${nf.format(rec.clicks)} ${rec.clicks > 1 ? 'clics' : 'clic'}` }),
+    h('span', { class: 'rec-place', text: recordingPlace(rec) }))));
+  return [
+    h('div', { class: 'toolbar' }, filter,
+      visitor ? h('a', { class: 'btn quiet', href: ctx.href({ visiteur: null }), text: 'Tous les visiteurs' }) : null,
+      h('span', { class: 'hint inline', text: `${nf.format(list.total)} ${list.total > 1 ? 'enregistrements' : 'enregistrement'}, ${megabytes(list.stored_bytes)} sur ${nf.format(settings.max_mb)} Mo` })),
+    h('section', { class: 'slab' }, rows.length
+      ? h('ul', { class: 'recs' }, rows)
+      : h('p', { class: 'empty', text: 'Aucun enregistrement ne correspond à ce filtre.' })),
+    list.next_before ? h('p', { class: 'hint', text: 'Seuls les 50 enregistrements les plus récents sont affichés.' }) : null,
+    form,
+  ];
+}
+
+function recordingSettings(ctx, settings) {
+  const error = h('p', { class: 'error', role: 'alert' });
+  const enabled = h('input', { type: 'checkbox', name: 'enabled', checked: settings.enabled });
+  const mask = h('input', { type: 'checkbox', name: 'mask_text', checked: settings.mask_text });
+  const number = (name, value, min, max) => h('input', { class: 'field', type: 'number', name, value, min, max, step: 1, required: true, inputmode: 'numeric', autocomplete: 'off' });
+  const sample = number('sample', settings.sample, 1, 100);
+  const retention = number('retention_days', settings.retention_days, 1, 365);
+  const cap = number('max_mb', settings.max_mb, 10, 100000);
+  const save = h('button', { class: 'btn', type: 'submit', text: 'Enregistrer les réglages' });
+  return h('details', { class: 'slab settings', open: !settings.enabled }, h('summary', { text: 'Réglages des enregistrements' }),
+    h('form', { class: 'form', onsubmit: async (event) => {
+      event.preventDefault();
+      save.disabled = true;
+      error.textContent = '';
+      try {
+        await api(ctx.root, { method: 'PATCH', body: { recording: {
+          enabled: enabled.checked, mask_text: mask.checked,
+          sample: Number(sample.value), retention_days: Number(retention.value), max_mb: Number(cap.value),
+        } } });
+        render();
+      } catch (failure) {
+        error.textContent = failure.status === 403 ? 'Seul un administrateur du site peut modifier ces réglages.' : failure.message;
+        save.disabled = false;
+      }
+    } },
+      h('label', { class: 'check' }, enabled, h('span', {}, 'Enregistrer les visites', h('small', { text: 'Uniquement celles des visiteurs qui y ont consenti ou des utilisateurs identifiés.' }))),
+      h('label', { class: 'check' }, mask, h('span', {}, 'Masquer tout le texte des pages', h('small', { text: 'Les champs de saisie sont toujours masqués. Pour masquer une zone précise, ajoutez-lui l\'attribut data-synalyse-mask ; data-synalyse-block la retire entièrement.' }))),
+      h('div', { class: 'settings-grid' },
+        h('label', {}, 'Part des visites enregistrées (%)', sample),
+        h('label', {}, 'Conservation (jours)', retention),
+        h('label', {}, 'Plafond de stockage (Mo)', cap)),
+      error, save));
+}
+
+function recordingPlayer(ctx, rec) {
+  const error = h('p', { class: 'error', role: 'alert' });
+  const remove = h('button', { class: 'btn quiet danger', type: 'button', text: 'Supprimer', onclick: async () => {
+    if (!confirm('Supprimer définitivement cet enregistrement ?')) return;
+    remove.disabled = true;
+    try {
+      await api(`${ctx.root}/recordings/${rec.id}`, { method: 'DELETE' });
+      location.hash = ctx.href({ rec: null });
+    } catch (failure) {
+      error.textContent = failure.status === 403 ? 'Votre rôle ne permet pas de supprimer un enregistrement.' : failure.message;
+      remove.disabled = false;
+    }
+  } });
+  const frame = h('iframe', { src: `/player#${ctx.project.id}/${rec.id}`, title: 'Lecture de l\'enregistrement', allow: 'fullscreen', referrerpolicy: 'no-referrer' });
+  // Le cadre prend les proportions de la fenêtre du visiteur, plus la place des commandes : pas de bandes vides.
+  const fit = () => {
+    if (!frame.isConnected) return window.removeEventListener('resize', fit);
+    if (!rec.view_w || !rec.view_h) return;
+    const width = frame.clientWidth;
+    const controls = width < 620 ? 136 : 58;
+    frame.style.height = `${Math.round(Math.max(260, Math.min(window.innerHeight * 0.78, width * rec.view_h / rec.view_w + controls)))}px`;
+  };
+  window.addEventListener('resize', fit);
+  requestAnimationFrame(fit);
+  return [
+    h('div', { class: 'toolbar' },
+      h('a', { class: 'btn quiet', href: ctx.href({ rec: null }), text: 'Tous les enregistrements' }),
+      h('a', { class: 'btn quiet', href: ctx.href({ rec: null, visiteur: rec.visitor }), text: 'Autres visites de ce visiteur' }),
+      h('span', { class: 'spacer' }), remove),
+    error,
+    h('section', { class: 'slab player' }, frame),
+    h('dl', { class: 'facts' },
+      h('div', {}, h('dt', { text: 'Début' }), h('dd', { text: fullDate.format(new Date(rec.started_at)) })),
+      h('div', {}, h('dt', { text: 'Page d\'entrée' }), h('dd', { text: rec.entry_host + rec.entry_path })),
+      h('div', {}, h('dt', { text: 'Activité' }), h('dd', { text: `${duration(rec.active_ms / 1000)} sur ${duration(rec.duration_ms / 1000)}` })),
+      h('div', {}, h('dt', { text: 'Pages et clics' }), h('dd', { text: `${nf.format(rec.pages)} et ${nf.format(rec.clicks)}` })),
+      h('div', {}, h('dt', { text: 'Appareil' }), h('dd', { text: recordingPlace(rec) || 'Inconnu' })),
+      h('div', {}, h('dt', { text: 'Fenêtre' }), h('dd', { text: rec.view_w ? `${rec.view_w} × ${rec.view_h}` : 'Inconnue' }))),
+  ];
 }
 
 window.addEventListener('hashchange', () => me && render());

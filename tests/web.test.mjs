@@ -19,7 +19,7 @@ test('la page d\'accueil est servie avec une politique de sécurité stricte', a
 });
 
 test('les fichiers de l\'interface sont revalidés par ETag', async () => {
-  for (const [name, type] of [['app.js', /javascript/], ['app.css', /css/], ['manrope.woff2', /font\/woff2/], ['cairn.svg', /svg/]]) {
+  for (const [name, type] of [['app.js', /javascript/], ['app.css', /css/], ['manrope.woff2', /font\/woff2/], ['logo.svg', /svg/]]) {
     const res = await fetch(`${BASE}/assets/${name}`);
     assert.equal(res.status, 200, name);
     assert.match(res.headers.get('content-type'), type);

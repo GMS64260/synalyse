@@ -11,7 +11,7 @@ test('sans authentification, l\'API répond 401', async () => {
     assert.equal(res.status, 401, `${method} ${path}`);
   }
   assert.equal((await call('GET', '/api/me', { cookie: 'synalyse_session=' + 'a'.repeat(64) })).status, 401);
-  assert.equal((await call('GET', '/api/me', { token: 'crn_' + 'a'.repeat(64) })).status, 401);
+  assert.equal((await call('GET', '/api/me', { token: 'syn_' + 'a'.repeat(64) })).status, 401);
 });
 
 test('la connexion refuse un mauvais mot de passe sans dire si le compte existe', async () => {

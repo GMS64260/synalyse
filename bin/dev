@@ -11,6 +11,7 @@ asweb() { sudo -n docker exec -i -u www-data "$APP" "$@"; }
 # Relie chaque plugin du dépôt dans l'instance (lien symbolique vers le montage en lecture seule).
 link() {
   for d in "$ROOT"/plugins/*/; do
+    [ -d "$d" ] || continue
     n="$(basename "$d")"
     asweb sh -c "[ -e /var/www/html/plugins/$n ] || ln -s /opt/synatomo/plugins/$n /var/www/html/plugins/$n"
   done
@@ -20,10 +21,17 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   up)      "${DC[@]}" up -d ;;
   down)    "${DC[@]}" down ;;
-  reset)   "${DC[@]}" down -v ; "${DC[@]}" up -d ;;
+  reset)   "${DC[@]}" down -v ; rm -f "$ROOT/dev/.token" ; "${DC[@]}" up -d ;;
   logs)    "${DC[@]}" logs --tail=80 "$@" ;;
   link)    link ;;
-  install) link; asweb php /opt/synatomo/dev/install.php ;;
+  install)
+    link; asweb php -d display_errors=1 /opt/synatomo/dev/install.php
+    asweb php /var/www/html/console core:update --yes >/dev/null
+    if [ ! -s "$ROOT/dev/.token" ]; then
+      ( umask 077; asweb php -d display_errors=1 /opt/synatomo/dev/install.php data --token 2>&1 >/dev/null \
+          | sed -n 's/^TOKEN=//p' > "$ROOT/dev/.token" )
+      echo "jeton écrit dans dev/.token"
+    fi ;;
   console) asweb php /var/www/html/console "$@" ;;
   php)     asweb php "$@" ;;
   sql)     sudo -n docker exec -i "$DB" sh -c 'mariadb -umatomo -p"$MARIADB_PASSWORD" matomo '"$*" ;;

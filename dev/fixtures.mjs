@@ -103,3 +103,22 @@ export function generateVisits() {
 export function siteDay(ts) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: SITE.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ts * 1000));
 }
+
+/**
+ * Visites telles que Matomo les enregistre : il ouvre une nouvelle visite quand
+ * une action tombe un autre jour (fuseau du site) que la précédente.
+ */
+export function storedVisits() {
+  const out = [];
+  for (const v of generateVisits()) {
+    let current = null;
+    for (const a of v.actions) {
+      if (!current || siteDay(a.ts) !== siteDay(current.actions.at(-1).ts)) {
+        current = { ...v, actions: [] };
+        out.push(current);
+      }
+      current.actions.push(a);
+    }
+  }
+  return out;
+}

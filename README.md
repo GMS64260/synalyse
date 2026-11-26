@@ -2,7 +2,7 @@
 
 Mesure d'audience et analyse produit auto-hébergées : entonnoirs, parcours, rétention, enregistrements de session et heatmaps. Un binaire Rust et un PostgreSQL, là où les plateformes équivalentes demandent une quarantaine de conteneurs.
 
-> Projet jeune : la mesure d'audience, les entonnoirs, les parcours et les enregistrements de session fonctionnent, le reste de la feuille de route est à venir. Pas encore de version publiée.
+> Projet jeune : la mesure d'audience, les entonnoirs, les parcours, la rétention, les fiches d'utilisateurs et les enregistrements de session fonctionnent, le reste de la feuille de route est à venir. Pas encore de version publiée.
 
 ## Pourquoi
 
@@ -24,7 +24,7 @@ PostHog répond au besoin, mais son auto-hébergement demande 16 Go de RAM, Clic
 | 1 | Mesure d'audience et interface web | Fait |
 | 1 bis | Compatibilité avec le traceur Matomo, import de l'historique, objectifs | À venir |
 | 2 | Entonnoirs et parcours des visiteurs | Fait |
-| 3 | Utilisateurs identifiés, rétention, cohortes | À venir |
+| 3 | Utilisateurs identifiés, fiches, rétention | Fait (cohortes enregistrées à venir) |
 | 4 | Enregistrements de session : consentement, masquage, lecteur | Fait |
 | 5 | Heatmaps | À venir |
 | 6 | Capture automatique des clics, erreurs JavaScript | À venir |
@@ -49,6 +49,17 @@ Sur vos pages, une seule ligne :
 ```
 
 Configuration par variables d'environnement : `SYNALYSE_DATABASE_URL` (obligatoire), `SYNALYSE_LISTEN`, `SYNALYSE_BASE_URL`, `SYNALYSE_TRUSTED_PROXIES`, `SYNALYSE_DATA_DIR` (dossier des enregistrements, à placer sur un volume persistant).
+
+## Utilisateurs et rétention
+
+Par défaut un visiteur est anonyme et n'est pas reconnu le lendemain. Deux appels changent cela :
+
+```js
+synalyse('identify', '42', { offre: 'pro' }); // utilisateur connecté de votre application, avec ses propriétés
+synalyse('consent', true);                     // visiteur d'un site public qui a donné son accord
+```
+
+La visite déjà commencée lui est rattachée. Il apparaît alors dans la section Utilisateurs (ses visites, son fil de pages vues et d'actions) et dans le tableau de rétention, qui montre quelle part des nouveaux visiteurs revient, jour après jour, semaine après semaine ou mois après mois.
 
 ## Enregistrements de session
 

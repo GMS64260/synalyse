@@ -286,3 +286,33 @@ pre.snippet { background: var(--surface); border: 1px solid var(--schiste); bord
   .rec-place { grid-column: 1 / -1; }
   .player iframe { height: 62vh; }
 }
+
+/* ——— Rétention : plus la case est pleine, plus la cohorte est revenue ——— */
+.retention { overflow-x: auto; padding: 8px; margin-top: 16px; }
+.retention table { border-collapse: separate; border-spacing: 3px; width: 100%; font-size: 14px; }
+.retention th, .retention td { padding: 8px 10px; white-space: nowrap; text-align: left; font-weight: 400; }
+.retention thead th { color: var(--granit); font-size: 13px; }
+.retention tbody th { font-weight: 600; position: sticky; left: 0; background: var(--surface); }
+.retention .num { text-align: right; }
+.retention .cell { text-align: center; min-width: 62px; border-radius: 5px; background: color-mix(in srgb, var(--serie) calc(var(--part, 0) * 92%), var(--neve)); }
+.retention .cell.strong { color: var(--surface); }
+.retention .cell.pending { background: none; }
+
+/* ——— Utilisateurs ——— */
+.rec.person { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.1fr); }
+.rec.person .rec-when { overflow: hidden; text-overflow: ellipsis; }
+div.rec:hover { background: none; }
+.part-title { font-size: 16px; font-weight: 700; margin: 22px 2px 10px; }
+.funnel .blank-title { margin-bottom: 14px; overflow-wrap: anywhere; }
+.funnel .facts { margin: 0 0 14px; }
+.timeline { list-style: none; margin: 0; padding: 8px 20px 12px; }
+.tl { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 4px 18px; padding: 8px 0; border-top: 1px solid var(--schiste); }
+.tl:first-child { border-top: 0; }
+.tl time { color: var(--granit); font-size: 14px; white-space: nowrap; }
+.tl-what { overflow-wrap: anywhere; }
+.tl-where { color: var(--granit); }
+.tl.event strong { color: var(--terre); }
+@media (max-width: 860px) {
+  .rec.person { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .tl { grid-template-columns: minmax(0, 1fr); }
+}

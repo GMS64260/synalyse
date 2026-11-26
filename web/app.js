@@ -160,6 +160,8 @@ function render() {
   if (route.sub === 'entonnoirs') return renderFunnels(project, route.params);
   if (route.sub === 'parcours') return renderPaths(project, route.params);
   if (route.sub === 'enregistrements') return renderRecordings(project, route.params);
+  if (route.sub === 'retention') return renderRetention(project, route.params);
+  if (route.sub === 'utilisateurs') return renderPeople(project, route.params);
   renderDashboard(project, route.params);
 }
 
@@ -257,10 +259,10 @@ async function renderInstall(summary) {
 
 // ——— Cadre commun aux écrans d'un site : barre du haut, sections, période, filtres ———
 
-const SECTIONS = [['', 'Audience'], ['entonnoirs', 'Entonnoirs'], ['parcours', 'Parcours'], ['enregistrements', 'Enregistrements']];
+const SECTIONS = [['', 'Audience'], ['entonnoirs', 'Entonnoirs'], ['parcours', 'Parcours'], ['retention', 'Rétention'], ['utilisateurs', 'Utilisateurs'], ['enregistrements', 'Enregistrements']];
 const SHARED_PARAMS = ['period', 'from', 'to', ...Object.keys(FILTER_NAMES)];
 
-function shell(project, params, section, { dated = true } = {}) {
+function shell(project, params, section, { dated = true, filtered = dated } = {}) {
   const token = ++renderToken;
   const period = resolvePeriod(params, project.timezone);
   const filters = Object.keys(FILTER_NAMES).filter((key) => params.has(key)).map((key) => [key, params.get(key)]);
@@ -308,7 +310,7 @@ function shell(project, params, section, { dated = true } = {}) {
     const query = shared().toString();
     return h('a', { href: `#${pathOf(name)}${query ? '?' + query : ''}`, 'aria-current': name === section ? 'page' : null, text: label });
   }));
-  const chips = h('div', { class: 'filters' }, (dated ? filters : []).map(([key, value]) => h('span', { class: 'chip' },
+  const chips = h('div', { class: 'filters' }, (filtered ? filters : []).map(([key, value]) => h('span', { class: 'chip' },
     h('span', { text: FILTER_NAMES[key] }), displayLabel(key, value),
     h('button', { type: 'button', 'aria-label': `Retirer le filtre ${FILTER_NAMES[key]}`, text: '×', onclick: () => update({ [key]: null }) }))));
 
@@ -330,6 +332,9 @@ function shell(project, params, section, { dated = true } = {}) {
     document.title = `${title} · Synalyse`;
     mount(h('a', { class: 'skip', href: '#contenu', text: 'Aller au contenu', onclick: (e) => { e.preventDefault(); document.getElementById('contenu').focus(); } }),
       topbar, h('main', { id: 'contenu', tabindex: '-1' }, h('h1', { class: 'sr-only', text: title }), nav, chips, ...nodes));
+    // Sur un écran étroit, la barre des sections défile : la section affichée doit rester visible.
+    const current = nav.querySelector('[aria-current]');
+    if (current && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = current.offsetLeft - (nav.clientWidth - current.offsetWidth) / 2;
     refreshLive();
     liveTimer = setInterval(() => document.visibilityState === 'visible' && refreshLive(), 30000);
   };
@@ -755,6 +760,145 @@ function drawPaths(container, data, onPick) {
     }
   });
   container.replaceChildren(root);
+}
+
+// ——— Rétention ———
+
+const RETENTION_UNITS = { day: ['Jour', 'Jour', 'le lendemain'], week: ['Semaine', 'Sem.', 'la semaine suivante'], month: ['Mois', 'Mois', 'le mois suivant'] };
+const monthLabel = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+async function renderRetention(project, params) {
+  const ctx = shell(project, params, 'retention', { filtered: false });
+  const unit = params.get('unit') in RETENTION_UNITS ? params.get('unit') : 'week';
+  const unitSelect = h('select', { class: 'field', 'aria-label': 'Regrouper par', onchange: (e) => ctx.update({ unit: e.target.value === 'week' ? null : e.target.value }) },
+    Object.entries(RETENTION_UNITS).map(([key, [label]]) => h('option', { value: key, text: `Par ${label.toLowerCase()}`, selected: key === unit })));
+  const body = h('div', {}, h('p', { class: 'empty', text: 'Calcul…' }));
+  ctx.show(h('div', { class: 'toolbar' }, unitSelect), body);
+  try {
+    const data = await api(`${ctx.root}/retention?from=${ctx.period.from}&to=${ctx.period.to}&unit=${unit}`);
+    if (ctx.stale()) return;
+    body.replaceChildren(...retentionTable(data, unit).filter(Boolean));
+  } catch (error) {
+    ctx.fail(body)(error);
+  }
+}
+
+function retentionTable(data, unit) {
+  const [, short, next] = RETENTION_UNITS[unit];
+  if (!data.visitors) {
+    return [h('section', { class: 'slab blank' },
+      h('h2', { class: 'blank-title', text: 'Aucun visiteur reconnu n\'est arrivé sur cette période' }),
+      h('p', { text: 'La rétention suit les visiteurs que le site reconnaît d\'une visite à l\'autre : ceux qui ont donné leur accord (synalyse(\'consent\', true)) et les utilisateurs connectés (synalyse(\'identify\', identifiant)). Les autres visiteurs sont anonymes d\'un jour à l\'autre et ne peuvent pas y figurer.' }))];
+  }
+  const cohortLabel = (start) => (unit === 'month' ? monthLabel.format(new Date(start + 'T00:00:00Z')) : unit === 'week' ? `Semaine du ${dayLabel(start)}` : dayLabel(start, longDay));
+  const columns = Math.max(...data.cohorts.map((c) => c.values.length)) - 1;
+  // Part de ceux qui reviennent à la période suivante, sur les cohortes pour lesquelles elle a commencé.
+  const judged = data.cohorts.filter((c) => c.size > 0 && c.values.length > 1);
+  const base = judged.reduce((sum, c) => sum + c.size, 0);
+  const back = judged.reduce((sum, c) => sum + c.values[1], 0);
+  const head = h('tr', {}, h('th', { scope: 'col', text: 'Première visite' }), h('th', { scope: 'col', class: 'num', text: 'Visiteurs' }),
+    Array.from({ length: columns }, (_, i) => h('th', { scope: 'col', class: 'num', text: `${short} ${i + 1}` })));
+  const rows = data.cohorts.map((cohort) => h('tr', {},
+    h('th', { scope: 'row', text: cohortLabel(cohort.start) }),
+    h('td', { class: 'num', text: nf.format(cohort.size) }),
+    Array.from({ length: columns }, (_, i) => {
+      const value = cohort.values[i + 1];
+      if (value === undefined) return h('td', { class: 'cell pending', 'aria-label': 'Pas encore écoulé' });
+      const share = cohort.size ? value / cohort.size : 0;
+      const cell = h('td', { class: 'cell', text: cohort.size ? pf.format(share) : '–', title: `${nf.format(value)} sur ${nf.format(cohort.size)}` });
+      cell.style.setProperty('--part', String(share));
+      if (share > 0.55) cell.classList.add('strong');
+      return cell;
+    })));
+  return [
+    h('section', { class: 'slab funnel' },
+      h('p', { class: 'funnel-summary' }, base
+        ? [h('strong', { text: pf.format(back / base) }), `des visiteurs reconnus reviennent ${next}.`]
+        : `${nf.format(data.visitors)} ${data.visitors > 1 ? 'visiteurs reconnus sont arrivés' : 'visiteur reconnu est arrivé'} ; la période suivante n'a pas encore commencé.`)),
+    h('section', { class: 'slab retention' }, columns > 0
+      ? h('table', {}, h('caption', { class: 'sr-only', text: 'Part des visiteurs de chaque cohorte revenus, période après période' }), h('thead', {}, head), h('tbody', {}, rows))
+      : h('table', {}, h('thead', {}, head), h('tbody', {}, rows))),
+    h('p', { class: 'hint', text: 'Chaque ligne suit les visiteurs reconnus arrivés pendant la période indiquée. Une case donne la part d\'entre eux revenue ensuite ; les cases vides ne sont pas encore écoulées. Les visiteurs anonymes n\'y figurent pas.' }),
+  ];
+}
+
+// ——— Utilisateurs ———
+
+const visitorName = (visitor) => visitor.user || `Visiteur ${visitor.id.slice(-6)}`;
+const traitText = (traits) => Object.entries(traits).map(([key, value]) => `${key} : ${value}`).join(', ');
+
+async function renderPeople(project, params) {
+  const ctx = shell(project, params, 'utilisateurs', { dated: false });
+  const body = h('div', {}, h('p', { class: 'empty', text: 'Chargement…' }));
+  ctx.show(body);
+  const selected = /^\d+$/.test(params.get('v') || '') ? params.get('v') : '';
+  try {
+    if (selected) {
+      const [visitor, timeline] = await Promise.all([api(`${ctx.root}/visitors/${selected}`), api(`${ctx.root}/visitors/${selected}/events?limit=100`)]);
+      if (!ctx.stale()) body.replaceChildren(...personProfile(ctx, visitor, timeline).filter(Boolean));
+      return;
+    }
+    const q = (params.get('q') || '').trim();
+    const list = await api(`${ctx.root}/visitors?limit=100${q ? '&q=' + encodeURIComponent(q) : ''}`);
+    if (!ctx.stale()) body.replaceChildren(...peopleList(ctx, list, q).filter(Boolean));
+  } catch (error) {
+    ctx.fail(body)(error);
+  }
+}
+
+function peopleList(ctx, list, q) {
+  if (!list.total) {
+    return [h('section', { class: 'slab blank' },
+      h('h2', { class: 'blank-title', text: 'Aucun visiteur reconnu pour l\'instant' }),
+      h('p', { text: 'Cette liste réunit les visiteurs que le site reconnaît d\'une visite à l\'autre. Dans une application, appelez synalyse(\'identify\', identifiant) quand un utilisateur est connecté ; vous pouvez joindre des propriétés : synalyse(\'identify\', \'42\', { offre: \'pro\' }).' }),
+      h('p', { text: 'Sur un site public, synalyse(\'consent\', true) après l\'accord du visiteur suffit. Sans cela, un visiteur reste anonyme et ne figure pas ici.' }))];
+  }
+  const input = h('input', { class: 'field', type: 'search', name: 'q', value: q, placeholder: 'Rechercher un identifiant…', 'aria-label': 'Rechercher un utilisateur par son identifiant', autocomplete: 'off', spellcheck: 'false' });
+  const search = h('form', { class: 'toolbar', role: 'search', onsubmit: (event) => { event.preventDefault(); ctx.update({ q: input.value.trim() || null }); } },
+    input, h('button', { class: 'btn quiet', type: 'submit', text: 'Rechercher' }),
+    q ? h('a', { class: 'btn quiet', href: ctx.href({ q: null }), text: 'Tout afficher' }) : null,
+    h('span', { class: 'hint inline', text: `${nf.format(list.total)} ${list.total > 1 ? 'visiteurs reconnus' : 'visiteur reconnu'}, dont ${nf.format(list.users)} ${list.users > 1 ? 'utilisateurs identifiés' : 'utilisateur identifié'}` }));
+  const rows = list.visitors.map((visitor) => h('li', {}, h('a', { class: 'rec person', href: ctx.href({ v: visitor.id, q: null }) },
+    h('span', { class: 'rec-when', text: visitorName(visitor) }),
+    h('span', { class: 'rec-page', text: traitText(visitor.traits) || (visitor.user ? '' : 'A donné son accord') }),
+    h('span', { class: 'rec-fig' }, h('strong', { text: nf.format(visitor.sessions) }), visitor.sessions > 1 ? ' visites' : ' visite'),
+    h('span', { class: 'rec-fig', text: `Vu le ${fullDate.format(new Date(visitor.last_seen))}` }),
+    h('span', { class: 'rec-place', text: `Arrivé le ${dayLabel(visitor.first_seen.slice(0, 10))}` }))));
+  return [search,
+    h('section', { class: 'slab' }, rows.length ? h('ul', { class: 'recs' }, rows) : h('p', { class: 'empty', text: `Aucun utilisateur ne correspond à « ${q} ».` })),
+    list.next_before ? h('p', { class: 'hint', text: 'Seuls les 100 visiteurs vus le plus récemment sont affichés. Utilisez la recherche pour en trouver un autre.' }) : null];
+}
+
+function personProfile(ctx, visitor, timeline) {
+  const traits = Object.entries(visitor.traits);
+  const sessions = visitor.recent_sessions.map((session) => h('li', {}, h('div', { class: 'rec person' },
+    h('span', { class: 'rec-when', text: fullDate.format(new Date(session.started_at)) }),
+    h('span', { class: 'rec-page', text: session.entry_path === session.exit_path ? session.entry_path : `${session.entry_path} → ${session.exit_path}` }),
+    h('span', { class: 'rec-fig' }, h('strong', { text: nf.format(session.pageviews) }), `${session.pageviews > 1 ? ' pages' : ' page'} en ${duration(session.duration_seconds)}`),
+    h('span', { class: 'rec-fig', text: session.referrer || CHANNELS[session.channel] }),
+    h('span', { class: 'rec-place', text: [DEVICES[session.device], session.browser, session.os].filter((part) => part && part !== 'Inconnu').join(', ') }))));
+  const events = timeline.events.map((event) => h('li', { class: event.kind === 'event' ? 'tl event' : 'tl' },
+    h('time', { datetime: event.ts, text: fullDate.format(new Date(event.ts)) }),
+    h('span', { class: 'tl-what' }, event.kind === 'event' ? h('strong', { text: event.name }) : event.path,
+      event.kind === 'event' ? h('span', { class: 'tl-where', text: ` sur ${event.path}` }) : event.title ? h('span', { class: 'tl-where', text: ` ${event.title}` }) : null)));
+  return [
+    h('div', { class: 'toolbar' },
+      h('a', { class: 'btn quiet', href: ctx.href({ v: null }), text: 'Tous les utilisateurs' }),
+      visitor.recordings ? h('a', { class: 'btn quiet', href: `#p/${ctx.project.id}/enregistrements?visiteur=${visitor.id}`, text: `${nf.format(visitor.recordings)} ${visitor.recordings > 1 ? 'enregistrements' : 'enregistrement'}` }) : null),
+    h('section', { class: 'slab funnel' },
+      h('h2', { class: 'blank-title', text: visitorName(visitor) }),
+      h('dl', { class: 'facts' },
+        h('div', {}, h('dt', { text: 'Type' }), h('dd', { text: visitor.user ? 'Utilisateur identifié par le site' : 'Visiteur ayant donné son accord' })),
+        h('div', {}, h('dt', { text: 'Première visite' }), h('dd', { text: fullDate.format(new Date(visitor.first_seen)) })),
+        h('div', {}, h('dt', { text: 'Dernière visite' }), h('dd', { text: fullDate.format(new Date(visitor.last_seen)) })),
+        h('div', {}, h('dt', { text: 'Visites' }), h('dd', { text: nf.format(visitor.sessions) })),
+        traits.map(([key, value]) => h('div', {}, h('dt', { text: key }), h('dd', { text: String(value) }))))),
+    h('h2', { class: 'part-title', text: 'Dernières visites' }),
+    h('section', { class: 'slab' }, sessions.length ? h('ul', { class: 'recs' }, sessions) : h('p', { class: 'empty', text: 'Aucune visite.' })),
+    h('h2', { class: 'part-title', text: 'Dernières pages vues et actions' }),
+    h('section', { class: 'slab' }, events.length ? h('ol', { class: 'timeline' }, events) : h('p', { class: 'empty', text: 'Aucune activité.' })),
+    timeline.next_before ? h('p', { class: 'hint', text: 'Seules les 100 dernières pages vues et actions sont affichées.' }) : null,
+  ];
 }
 
 // ——— Enregistrements de session ———

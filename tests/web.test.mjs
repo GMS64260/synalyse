@@ -1,7 +1,7 @@
 // Interface embarquée : fichiers servis, en-têtes de sécurité, cache.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BASE } from './helpers.mjs';
+import { BASE, probe } from './helpers.mjs';
 
 test('la page d\'accueil est servie avec une politique de sécurité stricte', async () => {
   const res = await fetch(BASE + '/');
@@ -20,11 +20,11 @@ test('la page d\'accueil est servie avec une politique de sécurité stricte', a
 
 test('les fichiers de l\'interface sont revalidés par ETag', async () => {
   for (const [name, type] of [['app.js', /javascript/], ['app.css', /css/], ['manrope.woff2', /font\/woff2/], ['logo.svg', /svg/]]) {
-    const res = await fetch(`${BASE}/assets/${name}`);
+    const res = await probe(`/assets/${name}`);
     assert.equal(res.status, 200, name);
     assert.match(res.headers.get('content-type'), type);
     const etag = res.headers.get('etag');
-    const again = await fetch(`${BASE}/assets/${name}`, { headers: { 'if-none-match': etag } });
+    const again = await probe(`/assets/${name}`, { headers: { 'if-none-match': etag } });
     assert.equal(again.status, 304, name);
   }
   // Le CSS et le JS ne chargent rien depuis un tiers.
@@ -34,7 +34,7 @@ test('les fichiers de l\'interface sont revalidés par ETag', async () => {
 
 test('seuls les fichiers prévus sont servis', async () => {
   for (const name of ['index.html', 'inconnu.js', '..%2fCargo.toml', '%2e%2e%2f%2e%2e%2fetc%2fpasswd', 'fonts%2fOFL.txt']) {
-    assert.equal((await fetch(`${BASE}/assets/${name}`)).status, 404, name);
+    assert.equal((await probe(`/assets/${name}`)).status, 404, name);
   }
-  assert.equal((await fetch(`${BASE}/n-importe-quoi`)).status, 404);
+  assert.equal((await probe('/n-importe-quoi')).status, 404);
 });

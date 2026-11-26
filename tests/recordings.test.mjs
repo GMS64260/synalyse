@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
-import { BASE, BROWSER, call, login, newProject, newToken } from './helpers.mjs';
+import { BASE, BROWSER, call, login, newProject, newToken, probe } from './helpers.mjs';
 
 const rid = () => [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -217,13 +217,13 @@ test('le lecteur est une page à part, seule à pouvoir charger des contenus du 
   assert.match(csp, /base-uri 'none'/);
   const html = await res.text();
   assert.ok(!/<script(?![^>]*src=)/.test(html), 'aucun script en ligne');
-  const app = (await fetch(BASE + '/')).headers.get('content-security-policy');
+  const app = (await probe('/')).headers.get('content-security-policy');
   assert.match(app, /frame-src 'self'/);
   assert.ok(!/img-src[^;]*https:/.test(app), 'l\'interface reste fermée aux contenus tiers');
   for (const name of ['player.js', 'player.css', 'replay.min.js', 'replay.min.css']) {
-    assert.equal((await fetch(`${BASE}/assets/${name}`)).status, 200, name);
+    assert.equal((await probe(`/assets/${name}`)).status, 200, name);
   }
-  assert.equal((await fetch(`${BASE}/assets/player.html`)).status, 404);
+  assert.equal((await probe('/assets/player.html')).status, 404);
 
   const recorder = await fetch(`${BASE}/r.js`);
   assert.equal(recorder.status, 200);

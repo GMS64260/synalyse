@@ -16,6 +16,14 @@ export async function call(method, path, { cookie, token, body, headers = {} } =
   return { status: res.status, body: parsed, headers: res.headers };
 }
 
+/** Requête dont seuls l'état et les en-têtes comptent. Le corps est lu jusqu'au bout : une réponse
+ *  volumineuse laissée en plan garde sa connexion ouverte et empêche le programme de test de finir. */
+export async function probe(url, init) {
+  const res = await fetch(url.startsWith('http') ? url : BASE + url, init);
+  await res.arrayBuffer();
+  return res;
+}
+
 /** Ouvre une session et renvoie la valeur d'en-tête Cookie à réutiliser. */
 export async function login(email = 'dev@synalyse.test', password = PASSWORD) {
   const res = await call('POST', '/api/auth/login', { body: { email, password } });

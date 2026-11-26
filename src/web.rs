@@ -44,9 +44,11 @@ const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-
 /// Une page rejouée recharge ses images, ses polices et ses feuilles de style depuis le site
 /// d'origine et porte des styles en ligne : ces sources sont ouvertes ici, et ici seulement.
 /// Aucun script hors des nôtres ne s'exécute, où que ce soit.
-const PLAYER_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https: http:; \
-                          img-src 'self' data: blob: https: http:; font-src 'self' data: https: http:; \
-                          media-src https: http: data: blob:; connect-src 'self'; frame-src 'self'; base-uri 'none'; \
+/// Seul `https:` est ouvert : un enregistrement forgé ne peut pas faire interroger le réseau
+/// local de la personne qui le regarde.
+const PLAYER_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' https:; \
+                          img-src 'self' data: blob: https:; font-src 'self' data: https:; \
+                          media-src https: data: blob:; connect-src 'self'; frame-src 'self'; base-uri 'none'; \
                           form-action 'none'; frame-ancestors 'self'";
 
 async fn serve(name: &str, request: &HeaderMap) -> Response {

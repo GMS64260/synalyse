@@ -14,7 +14,7 @@ use crate::auth::{self, Need, Principal, Scope};
 use crate::error::AppError;
 use crate::ids;
 use crate::ingest::{self, RawEvent, VisitorContext, writer::Msg};
-use crate::recording::RecordingSettings;
+use crate::recording::{RecordingPatch, RecordingSettings};
 use crate::ua;
 
 const PROJECT_COLUMNS: &str = "id, org_id, name, public_key, timezone, domains, created_at, settings";
@@ -133,7 +133,7 @@ pub struct ProjectPatch {
     #[serde(default)]
     domains: Option<Vec<String>>,
     #[serde(default)]
-    recording: Option<RecordingSettings>,
+    recording: Option<RecordingPatch>,
 }
 
 pub async fn update(
@@ -147,7 +147,16 @@ pub async fn update(
     let name = body.name.as_deref().map(clean_name).transpose()?;
     let timezone = body.timezone.as_deref().map(clean_timezone).transpose()?;
     let domains = body.domains.as_deref().map(clean_domains).transpose()?;
-    let recording = body.recording.map(|r| serde_json::to_value(r.clamped()).expect("réglages sérialisables"));
+    // Un réglage absent de la requête garde sa valeur : on part de ce qui est en base.
+    let recording = match &body.recording {
+        Some(patch) => {
+            let current: Value =
+                client.query_one("SELECT settings FROM projects WHERE id = $1", &[&project_id]).await?.get(0);
+            let merged = RecordingSettings::from_settings(&current).patched(patch);
+            Some(serde_json::to_value(merged).expect("réglages sérialisables"))
+        }
+        None => None,
+    };
     let row = client
         .query_one(
             &format!(

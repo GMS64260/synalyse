@@ -308,7 +308,7 @@ function shell(project, params, section, { dated = true } = {}) {
     const query = shared().toString();
     return h('a', { href: `#${pathOf(name)}${query ? '?' + query : ''}`, 'aria-current': name === section ? 'page' : null, text: label });
   }));
-  const chips = h('div', { class: 'filters' }, filters.map(([key, value]) => h('span', { class: 'chip' },
+  const chips = h('div', { class: 'filters' }, (dated ? filters : []).map(([key, value]) => h('span', { class: 'chip' },
     h('span', { text: FILTER_NAMES[key] }), displayLabel(key, value),
     h('button', { type: 'button', 'aria-label': `Retirer le filtre ${FILTER_NAMES[key]}`, text: '×', onclick: () => update({ [key]: null }) }))));
 
@@ -794,7 +794,7 @@ function recordingList(ctx, settings, list, minActive, visitor) {
       h('h2', { class: 'blank-title', text: settings.enabled ? 'Aucun enregistrement pour l\'instant' : 'Revoyez une visite comme si vous y étiez' }),
       h('p', { text: settings.enabled
         ? 'Les enregistrements sont activés. Une visite apparaît ici dès que le visiteur a donné son accord, ou qu\'un utilisateur connecté est identifié par votre application.'
-        : 'Un enregistrement rejoue ce que le visiteur a vu et fait : souris, clics, défilement, navigation. Ce qu\'il saisit dans un champ n\'est jamais capté.' }),
+        : 'Un enregistrement rejoue ce que le visiteur a vu et fait : souris, clics, défilement, navigation. Ce qu\'il saisit n\'est jamais capté : champs masqués, cases à cocher et champs cachés retirés.' }),
       h('p', { text: 'Seuls sont enregistrés les visiteurs qui y ont consenti : votre site appelle synalyse(\'consent\', true) après leur accord, ou synalyse(\'identify\', identifiant) pour un utilisateur connecté.' })), form];
   }
   const filter = h('select', { class: 'field', 'aria-label': 'Durée d\'activité', onchange: (e) => ctx.update({ actif: e.target.value === '0' ? null : e.target.value }) },
@@ -843,7 +843,7 @@ function recordingSettings(ctx, settings) {
       }
     } },
       h('label', { class: 'check' }, enabled, h('span', {}, 'Enregistrer les visites', h('small', { text: 'Uniquement celles des visiteurs qui y ont consenti ou des utilisateurs identifiés.' }))),
-      h('label', { class: 'check' }, mask, h('span', {}, 'Masquer tout le texte des pages', h('small', { text: 'Les champs de saisie sont toujours masqués. Pour masquer une zone précise, ajoutez-lui l\'attribut data-synalyse-mask ; data-synalyse-block la retire entièrement.' }))),
+      h('label', { class: 'check' }, mask, h('span', {}, 'Masquer tout le texte des pages', h('small', { text: 'Les champs de saisie et les zones éditables sont toujours masqués, les cases à cocher retirées. Pour masquer une zone précise, ajoutez-lui l\'attribut data-synalyse-mask ; data-synalyse-block la retire entièrement.' }))),
       h('div', { class: 'settings-grid' },
         h('label', {}, 'Part des visites enregistrées (%)', sample),
         h('label', {}, 'Conservation (jours)', retention),

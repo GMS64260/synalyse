@@ -51,24 +51,38 @@
   // Enregistrement de session : seulement pour un visiteur qui porte un identifiant stable
   // (consentement donné ou utilisateur connecté), et si le projet l'a activé. L'enregistreur
   // est un fichier à part, chargé à ce moment-là : les autres visiteurs ne le téléchargent jamais.
-  var recorder = 0;
+  var attempt = 0;
+  function identity() {
+    return store('synalyse_optout') === '1' ? null : distinct;
+  }
   function record() {
-    if (recorder || !distinct || !w.fetch || store('synalyse_optout') === '1') return;
-    recorder = 1;
+    if (w.synalyse.rec || !identity() || !w.fetch) return;
+    // Chaque tentative porte un numéro : une réponse arrivée après un retrait du consentement est ignorée.
+    var mine = ++attempt;
     fetch(origin + '/r/config?k=' + encodeURIComponent(key)).then(function (res) { return res.json(); }).then(function (cfg) {
-      if (!cfg || !cfg.record || !distinct) { recorder = 0; return; }
-      w.synalyse.rec = { key: key, url: origin + '/r', cfg: cfg, id: function () { return distinct; } };
+      if (mine !== attempt || w.synalyse.rec || !cfg || !cfg.record || !identity()) return;
+      w.synalyse.rec = { key: key, url: origin + '/r', cfg: cfg, id: identity };
       var el = d.createElement('script');
       el.src = origin + '/r.js';
       el.async = true;
       d.head.appendChild(el);
-    }).catch(function () { recorder = 0; });
+    }).catch(function () {});
   }
   function stopRecording() {
-    recorder = 0;
-    if (w.synalyse.rec && w.synalyse.rec.stop) w.synalyse.rec.stop();
+    attempt++;
+    var rec = w.synalyse.rec;
     w.synalyse.rec = null;
+    if (rec) {
+      if (rec.stop) rec.stop();
+      // Enregistreur encore en cours de chargement : il trouvera `stop` posé et ne démarrera pas.
+      else rec.stop = function () {};
+    }
   }
+  // Consentement retiré ou opposition exprimée dans un autre onglet : cet onglet suit.
+  w.addEventListener('storage', function (event) {
+    if (event.key === 'synalyse_id') { distinct = event.newValue; if (distinct) record(); else stopRecording(); }
+    if (event.key === 'synalyse_optout') { if (event.newValue === '1') stopRecording(); else record(); }
+  });
 
   function newId() {
     if (w.crypto && w.crypto.randomUUID) return w.crypto.randomUUID();

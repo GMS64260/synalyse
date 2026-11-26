@@ -16,8 +16,8 @@ function sample(start, { host = 'demo.test', path = '/tarifs' } = {}) {
 }
 
 function send(key, id, events, { distinct = 'visiteur-consentant-1', gzip = false, ua = BROWSER } = {}) {
-  const body = JSON.stringify({ k: key, d: distinct, rid: id, e: events });
-  return fetch(`${BASE}/r${gzip ? '?z=1' : ''}`, {
+  const body = typeof events === 'string' ? events : JSON.stringify({ d: distinct, e: events });
+  return fetch(`${BASE}/r?k=${encodeURIComponent(key)}&rid=${encodeURIComponent(id)}${gzip ? '&z=1' : ''}`, {
     method: 'POST',
     headers: { 'content-type': 'text/plain', 'user-agent': ua },
     body: gzip ? gzipSync(body) : body,
@@ -78,7 +78,7 @@ test('un enregistrement est stocké, résumé et relu tel quel', async () => {
   assert.equal(rec.id, id);
   assert.deepEqual([rec.events, rec.pages, rec.clicks], [8, 2, 1]);
   assert.deepEqual([rec.entry_host, rec.entry_path, rec.view_w, rec.view_h], ['demo.test', '/tarifs', 1280, 720]);
-  assert.equal(rec.active_ms, 1500);
+  assert.equal(rec.active_ms, 3000, 'le temps actif se compte aussi entre deux envois');
   assert.equal(rec.browser, 'Chrome');
   assert.ok(rec.bytes > 0 && rec.bytes === list.body.stored_bytes);
   assert.match(rec.visitor, /^\d+$/);
@@ -115,9 +115,12 @@ test('rien n\'est enregistré sans consentement, pour un robot, un autre site ou
   assert.equal((await send(key, '../../etc/passwd-00000000', sample(now))).status, 400);
   assert.equal((await send(key, rid(), [])).status, 400);
   assert.equal((await send(key, rid(), [{ type: 42, timestamp: now }])).status, 400);
-  assert.equal((await fetch(`${BASE}/r`, { method: 'POST', headers: { 'user-agent': BROWSER }, body: 'pas du json' })).status, 400);
-  assert.equal((await fetch(`${BASE}/r?z=1`, { method: 'POST', headers: { 'user-agent': BROWSER }, body: 'pas du gzip' })).status, 400);
-  assert.equal((await fetch(`${BASE}/r`, { method: 'POST', headers: { 'user-agent': BROWSER }, body: 'x'.repeat(3 << 20) })).status, 413);
+  assert.equal((await send(key, rid(), 'pas du json')).status, 400);
+  assert.equal((await fetch(`${BASE}/r?k=${key}&rid=${rid()}&z=1`, { method: 'POST', headers: { 'user-agent': BROWSER }, body: 'pas du gzip' })).status, 400);
+  assert.equal((await send(key, rid(), 'x'.repeat(3 << 20))).status, 413);
+  assert.equal((await send(key, rid(), [{ type: 4, timestamp: now, data: { width: 10, height: 10 } }])).status, 400, 'page sans adresse');
+  // Site inconnu : écarté avant toute lecture du corps, même illisible.
+  assert.equal((await send('cle-inconnue', rid(), 'pas du json')).status, 410);
 
   // Un autre visiteur ne peut pas écrire dans l'enregistrement de quelqu'un.
   const id = rid();
@@ -127,6 +130,51 @@ test('rien n\'est enregistré sans consentement, pour un robot, un autre site ou
   const list = await call('GET', `/api/projects/${project.id}/recordings`, { cookie });
   assert.equal(list.body.total, 1);
   assert.equal(list.body.recordings[0].events, 4);
+});
+
+test('un réglage modifié seul laisse les autres en place', async () => {
+  const cookie = await login();
+  const project = await newProject(cookie);
+  await enable(cookie, project, { mask_text: true, retention_days: 365, max_mb: 2000, sample: 40 });
+  const res = await call('PATCH', `/api/projects/${project.id}`, { cookie, body: { recording: { enabled: false } } });
+  assert.deepEqual(res.body.recording, { enabled: false, sample: 40, retention_days: 365, mask_text: true, max_mb: 2000 });
+  const renamed = await call('PATCH', `/api/projects/${project.id}`, { cookie, body: { name: 'Autre nom' } });
+  assert.deepEqual(renamed.body.recording, res.body.recording);
+});
+
+test('un utilisateur connecté à identifiant court est enregistré, et un envoi sur plusieurs lignes reste lisible', async () => {
+  const cookie = await login();
+  const project = await newProject(cookie);
+  await enable(cookie, project);
+  const id = rid();
+  const events = sample(Date.now());
+  const pretty = JSON.stringify({ d: 'u:42', e: events }, null, 2);
+  assert.equal((await send(project.public_key, id, pretty)).status, 204);
+  const res = await fetch(`${BASE}/api/projects/${project.id}/recordings/${id}/events`, { headers: { cookie } });
+  const lines = (await res.text()).split('\n').filter(Boolean);
+  assert.equal(lines.length, 1, 'un morceau, une ligne');
+  assert.deepEqual(JSON.parse(lines[0]), events);
+});
+
+test('le plafond de stockage du site arrête les nouveaux envois', async () => {
+  const cookie = await login();
+  const project = await newProject(cookie);
+  await enable(cookie, project, { max_mb: 10 });
+  const key = project.public_key;
+  // Du texte aléatoire, donc incompressible : environ 1,45 Mo stockés par envoi.
+  const noise = () => Buffer.from(crypto.getRandomValues(new Uint8Array(60000))).toString('base64');
+  const heavy = (start) => [...sample(start), ...Array.from({ length: 24 }, (_, i) => ({ type: 3, timestamp: start + 3000 + i, data: { source: 0, texts: [{ id: 2, value: noise() }], attributes: [], removes: [], adds: [] } }))];
+  let stopped = 0;
+  for (let i = 0; i < 12 && !stopped; i++) {
+    const status = (await send(key, rid(), heavy(Date.now()))).status;
+    if (status === 410) stopped = i; else assert.equal(status, 204);
+  }
+  assert.ok(stopped >= 7 && stopped <= 9, `arrêt autour de 10 Mo, obtenu après ${stopped} envois`);
+  const list = await call('GET', `/api/projects/${project.id}/recordings`, { cookie });
+  assert.ok(list.body.stored_bytes >= 10 << 20 && list.body.stored_bytes < 12 << 20);
+  // Supprimer libère de la place : les envois reprennent.
+  for (const rec of list.body.recordings.slice(0, 3)) await call('DELETE', `/api/projects/${project.id}/recordings/${rec.id}`, { cookie });
+  assert.equal((await send(key, rid(), sample(Date.now()))).status, 204);
 });
 
 test('les enregistrements d\'un site ne sont visibles que de son organisation', async () => {
@@ -164,6 +212,9 @@ test('le lecteur est une page à part, seule à pouvoir charger des contenus du 
   assert.match(csp, /script-src 'self';/, 'aucun script hors des nôtres');
   assert.match(csp, /frame-ancestors 'self'/);
   assert.match(csp, /img-src[^;]*https:/);
+  assert.ok(!/http:/.test(csp), 'pas de contenu en clair : le réseau local de la personne qui regarde reste hors d\'atteinte');
+  assert.match(csp, /form-action 'none'/);
+  assert.match(csp, /base-uri 'none'/);
   const html = await res.text();
   assert.ok(!/<script(?![^>]*src=)/.test(html), 'aucun script en ligne');
   const app = (await fetch(BASE + '/')).headers.get('content-security-policy');

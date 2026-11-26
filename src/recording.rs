@@ -8,13 +8,15 @@
 //! Rien n'est enregistré pour un visiteur sans identifiant stable : celui-ci n'existe
 //! qu'après son consentement ou pour un utilisateur connecté d'une application.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::SocketAddr;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
@@ -22,6 +24,7 @@ use deadpool_postgres::Pool;
 use flate2::Compression;
 use flate2::read::{GzDecoder, MultiGzDecoder};
 use flate2::write::GzEncoder;
+use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use serde_json::value::RawValue;
@@ -34,6 +37,9 @@ use crate::{ingest, referrer, ua};
 pub const MAX_WIRE_BYTES: usize = 2 << 20;
 const MAX_CHUNK_BYTES: u64 = 16 << 20;
 const MAX_EVENTS_PER_CHUNK: usize = 50_000;
+/// Morceaux décompressés et lus en même temps : chacun peut occuper quelques dizaines de mégaoctets.
+const PARALLEL_CHUNKS: usize = 4;
+static CHUNK_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(PARALLEL_CHUNKS);
 /// Au-delà, l'enregistrement est clos : le navigateur reçoit 410 et s'arrête.
 const MAX_RECORDING_BYTES: i64 = 64 << 20;
 const MAX_RECORDING_MINUTES: i64 = 120;
@@ -60,7 +66,33 @@ impl Default for RecordingSettings {
     }
 }
 
+/// Modification partielle des réglages : un champ absent garde sa valeur.
+#[derive(Debug, Default, Deserialize)]
+pub struct RecordingPatch {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    sample: Option<u8>,
+    #[serde(default)]
+    retention_days: Option<u16>,
+    #[serde(default)]
+    mask_text: Option<bool>,
+    #[serde(default)]
+    max_mb: Option<u32>,
+}
+
 impl RecordingSettings {
+    pub fn patched(self, patch: &RecordingPatch) -> Self {
+        Self {
+            enabled: patch.enabled.unwrap_or(self.enabled),
+            sample: patch.sample.unwrap_or(self.sample),
+            retention_days: patch.retention_days.unwrap_or(self.retention_days),
+            mask_text: patch.mask_text.unwrap_or(self.mask_text),
+            max_mb: patch.max_mb.unwrap_or(self.max_mb),
+        }
+        .clamped()
+    }
+
     pub fn clamped(self) -> Self {
         Self {
             sample: self.sample.min(100),
@@ -88,20 +120,91 @@ pub fn file_path(data_dir: &Path, project_id: i64, id: &str) -> PathBuf {
     data_dir.join("recordings").join(project_id.to_string()).join(format!("{id}.rec"))
 }
 
-fn lenient_u64<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
-    Ok(Value::deserialize(d)?.as_u64())
+/// Nombre entier lu s'il y en a un, sinon rien. Un tableau ou un objet à cette place est
+/// parcouru sans être chargé en mémoire : le contenu d'un envoi n'est pas digne de confiance.
+#[derive(Default)]
+struct LooseU64(Option<u64>);
+
+/// Chaîne lue s'il y en a une (tronquée), sinon rien.
+#[derive(Default)]
+struct LooseString(Option<String>);
+
+struct LooseVisitor<T>(std::marker::PhantomData<T>);
+
+macro_rules! skip_everything_else {
+    () => {
+        fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(Default::default())
+        }
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(Default::default())
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            while seq.next_element::<IgnoredAny>()?.is_some() {}
+            Ok(Default::default())
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok(Default::default())
+        }
+    };
 }
 
-fn lenient_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(match Value::deserialize(d)? {
-        Value::String(s) => Some(s),
-        _ => None,
-    })
+impl<'de> Visitor<'de> for LooseVisitor<LooseU64> {
+    type Value = LooseU64;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("une valeur JSON")
+    }
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(LooseU64(Some(v)))
+    }
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(LooseU64(u64::try_from(v).ok()))
+    }
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+        Ok(LooseU64(((0.0..1e15).contains(&v) && v.fract() == 0.0).then_some(v as u64)))
+    }
+    fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(LooseU64(None))
+    }
+    skip_everything_else!();
+}
+
+impl<'de> Visitor<'de> for LooseVisitor<LooseString> {
+    type Value = LooseString;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("une valeur JSON")
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(LooseString(None))
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(LooseString(None))
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(LooseString(None))
+    }
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(LooseString(Some(v.chars().take(2048).collect())))
+    }
+    skip_everything_else!();
+}
+
+impl<'de> Deserialize<'de> for LooseU64 {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(LooseVisitor::<Self>(std::marker::PhantomData))
+    }
+}
+
+impl<'de> Deserialize<'de> for LooseString {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(LooseVisitor::<Self>(std::marker::PhantomData))
+    }
 }
 
 /// Ce que le serveur lit d'un événement `rrweb` : le reste (l'arbre de la page) est ignoré sans être chargé.
 #[derive(Deserialize)]
-struct Lite {
+pub struct Lite {
     #[serde(rename = "type")]
     kind: u8,
     timestamp: f64,
@@ -111,16 +214,42 @@ struct Lite {
 
 #[derive(Deserialize, Default)]
 struct LiteData {
-    #[serde(default, deserialize_with = "lenient_u64")]
-    source: Option<u64>,
-    #[serde(default, rename = "type", deserialize_with = "lenient_u64")]
-    kind: Option<u64>,
-    #[serde(default, deserialize_with = "lenient_string")]
-    href: Option<String>,
-    #[serde(default, deserialize_with = "lenient_u64")]
-    width: Option<u64>,
-    #[serde(default, deserialize_with = "lenient_u64")]
-    height: Option<u64>,
+    #[serde(default)]
+    source: LooseU64,
+    #[serde(default, rename = "type")]
+    kind: LooseU64,
+    #[serde(default)]
+    href: LooseString,
+    #[serde(default)]
+    width: LooseU64,
+    #[serde(default)]
+    height: LooseU64,
+}
+
+/// Liste d'événements bornée pendant la lecture : un envoi démesuré est refusé avant d'occuper la mémoire.
+struct Events(Vec<Lite>);
+
+impl<'de> Deserialize<'de> for Events {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct ListVisitor;
+        impl<'de> Visitor<'de> for ListVisitor {
+            type Value = Events;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("un tableau d'événements")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Events, A::Error> {
+                let mut events = Vec::new();
+                while let Some(event) = seq.next_element::<Lite>()? {
+                    if events.len() >= MAX_EVENTS_PER_CHUNK {
+                        return Err(serde::de::Error::custom("trop d'événements"));
+                    }
+                    events.push(event);
+                }
+                Ok(Events(events))
+            }
+        }
+        d.deserialize_seq(ListVisitor)
+    }
 }
 
 const EVENT_INCREMENTAL: u8 = 3;
@@ -138,34 +267,39 @@ pub struct ChunkStats {
     pub pages: i32,
     pub active_ms: i64,
     pub span_ms: i64,
-    pub first_href: Option<String>,
+    /// Instant (horloge du navigateur) de la dernière action du visiteur, pour le morceau suivant.
+    pub last_action_ms: Option<i64>,
     pub hrefs: Vec<String>,
     pub view: Option<(i32, i32)>,
 }
 
 /// Lit le tableau d'événements d'un morceau. Erreur si ce n'en est pas un.
-pub fn analyse(events_json: &str) -> Result<ChunkStats, &'static str> {
-    let events: Vec<Lite> = serde_json::from_str(events_json).map_err(|_| "événements illisibles")?;
-    if events.is_empty() || events.len() > MAX_EVENTS_PER_CHUNK {
-        return Err("nombre d'événements invalide");
+pub fn parse_events(events_json: &str) -> Result<Vec<Lite>, &'static str> {
+    let Events(events) = serde_json::from_str(events_json).map_err(|_| "événements illisibles")?;
+    if events.is_empty() {
+        return Err("aucun événement");
     }
+    Ok(events)
+}
+
+/// Résume un morceau. `previous_action` est la dernière action connue de l'enregistrement :
+/// le temps actif se compte aussi à cheval sur deux envois.
+pub fn summarise(events: &[Lite], previous_action: Option<i64>) -> Result<ChunkStats, &'static str> {
     let mut stats = ChunkStats { events: events.len() as i32, ..Default::default() };
     let (mut min, mut max) = (f64::MAX, f64::MIN);
-    let mut last_action: Option<f64> = None;
-    for event in &events {
-        if event.kind > 6 || !event.timestamp.is_finite() || event.timestamp < 0.0 {
+    let mut last_action: Option<f64> = previous_action.map(|ms| ms as f64);
+    for event in events {
+        if event.kind > 6 || !event.timestamp.is_finite() || event.timestamp < 0.0 || event.timestamp > 1e14 {
             return Err("événement invalide");
         }
         min = min.min(event.timestamp);
         max = max.max(event.timestamp);
-        let Some(data) = &event.data else { continue };
         if event.kind == EVENT_META {
+            // Sans adresse, impossible de vérifier que la page appartient au site : refusé.
+            let data = event.data.as_ref().ok_or("page sans adresse")?;
+            stats.hrefs.push(data.href.0.clone().ok_or("page sans adresse")?);
             stats.pages += 1;
-            if let Some(href) = &data.href {
-                stats.first_href.get_or_insert_with(|| href.clone());
-                stats.hrefs.push(href.clone());
-            }
-            if let (Some(w), Some(h)) = (data.width, data.height)
+            if let (Some(w), Some(h)) = (data.width.0, data.height.0)
                 && stats.view.is_none()
                 && w <= 20_000
                 && h <= 20_000
@@ -173,10 +307,11 @@ pub fn analyse(events_json: &str) -> Result<ChunkStats, &'static str> {
                 stats.view = Some((w as i32, h as i32));
             }
         } else if event.kind == EVENT_INCREMENTAL
-            && let Some(source) = data.source
+            && let Some(data) = &event.data
+            && let Some(source) = data.source.0
             && ACTIVE_SOURCES.contains(&source)
         {
-            if source == SOURCE_MOUSE_INTERACTION && data.kind == Some(MOUSE_CLICK) {
+            if source == SOURCE_MOUSE_INTERACTION && data.kind.0 == Some(MOUSE_CLICK) {
                 stats.clicks += 1;
             }
             if let Some(previous) = last_action {
@@ -185,11 +320,19 @@ pub fn analyse(events_json: &str) -> Result<ChunkStats, &'static str> {
                     stats.active_ms += gap as i64;
                 }
             }
-            last_action = Some(event.timestamp);
+            if last_action.is_none_or(|previous| event.timestamp > previous) {
+                last_action = Some(event.timestamp);
+            }
         }
     }
+    stats.last_action_ms = last_action.map(|ms| ms as i64);
     stats.span_ms = ((max - min).max(0.0) as i64).min(3_600_000);
     Ok(stats)
+}
+
+#[cfg(test)]
+fn analyse(events_json: &str) -> Result<ChunkStats, &'static str> {
+    summarise(&parse_events(events_json)?, None)
 }
 
 fn gunzip_limited(body: &[u8]) -> Result<Vec<u8>, AppError> {
@@ -210,10 +353,11 @@ fn append_chunk(path: &Path, events_json: &str) -> std::io::Result<u64> {
     encoder.write_all(events_json.as_bytes())?;
     encoder.write_all(b"\n")?;
     let frame = encoder.finish()?;
+    // Lisibles du seul compte du serveur : ces fichiers montrent ce que des visiteurs ont vu.
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
     }
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path)?;
     file.write_all(&frame)?;
     Ok(frame.len() as u64)
 }
@@ -240,21 +384,60 @@ pub fn delete_file(data_dir: &Path, project_id: i64, id: &str) {
     }
 }
 
+/// Corps d'un envoi : l'identifiant stable du visiteur et les événements.
 #[derive(Deserialize)]
 struct Chunk<'a> {
-    k: String,
     #[serde(default)]
     d: Option<String>,
-    rid: String,
     #[serde(borrow)]
     e: &'a RawValue,
 }
 
+/// Paramètres d'un envoi. La clé du site et l'identifiant de l'enregistrement sont dans
+/// l'adresse : le serveur les vérifie avant de décompresser et de lire quoi que ce soit.
 #[derive(Deserialize)]
 pub struct WireOptions {
+    #[serde(default)]
+    k: String,
+    #[serde(default)]
+    rid: String,
     /// « 1 » : le corps est compressé en gzip.
     #[serde(default)]
     z: Option<String>,
+}
+
+/// Place occupée par les enregistrements de chaque projet, relue en base une fois par minute
+/// et tenue à jour entre-temps : le plafond se vérifie à chaque envoi sans requête lourde.
+#[derive(Default)]
+pub struct Usage {
+    by_project: Mutex<HashMap<i64, (Instant, i64)>>,
+}
+
+impl Usage {
+    async fn used(&self, client: &tokio_postgres::Client, project_id: i64) -> Result<i64, AppError> {
+        if let Some((at, bytes)) = self.by_project.lock().expect("verrou").get(&project_id)
+            && at.elapsed() < Duration::from_secs(60)
+        {
+            return Ok(*bytes);
+        }
+        let bytes: i64 = client
+            .query_one("SELECT COALESCE(SUM(bytes), 0)::bigint FROM recordings WHERE project_id = $1", &[&project_id])
+            .await?
+            .get(0);
+        self.by_project.lock().expect("verrou").insert(project_id, (Instant::now(), bytes));
+        Ok(bytes)
+    }
+
+    fn add(&self, project_id: i64, bytes: i64) {
+        if let Some(entry) = self.by_project.lock().expect("verrou").get_mut(&project_id) {
+            entry.1 += bytes;
+        }
+    }
+
+    /// À appeler après une suppression : la prochaine vérification relit la base.
+    pub fn forget(&self, project_id: i64) {
+        self.by_project.lock().expect("verrou").remove(&project_id);
+    }
 }
 
 fn public(mut response: Response, cache: &'static str) -> Response {
@@ -299,17 +482,15 @@ enum Outcome {
     Stop,
 }
 
-/// `POST /r` : un morceau d'enregistrement. 204 s'il est pris ou ignoré, 410 pour dire au
-/// navigateur d'arrêter (enregistrements coupés, plafond atteint).
+/// `POST /r?k=<clé>&rid=<enregistrement>` : un morceau d'enregistrement. 204 s'il est pris ou
+/// ignoré, 410 pour dire au navigateur d'arrêter (enregistrements coupés, plafond atteint).
 pub async fn collect(
     State(state): State<AppState>,
-    ConnectInfo(_peer): ConnectInfo<SocketAddr>,
     Query(options): Query<WireOptions>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let compressed = options.z.as_deref() == Some("1");
-    let response = match collect_inner(&state, &headers, compressed, body).await {
+    let response = match collect_inner(&state, &headers, &options, body).await {
         Ok(Outcome::Stored | Outcome::Ignored) => StatusCode::NO_CONTENT.into_response(),
         Ok(Outcome::Stop) => StatusCode::GONE.into_response(),
         Err(e) => e.into_response(),
@@ -317,10 +498,14 @@ pub async fn collect(
     public(response, "no-store")
 }
 
+fn blocking_failed(e: impl std::fmt::Display) -> AppError {
+    AppError::Internal(format!("traitement d'un morceau : {e}"))
+}
+
 async fn collect_inner(
     state: &AppState,
     headers: &HeaderMap,
-    compressed: bool,
+    options: &WireOptions,
     body: Bytes,
 ) -> Result<Outcome, AppError> {
     let user_agent = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("");
@@ -328,85 +513,99 @@ async fn collect_inner(
     if agent.bot {
         return Ok(Outcome::Stop);
     }
-    // Décompression et lecture hors du fil asynchrone : un morceau peut peser plusieurs mégaoctets.
-    let parsed = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
-        let text = if compressed { gunzip_limited(&body)? } else { body.to_vec() };
-        let text = String::from_utf8(text).map_err(|_| AppError::bad("Corps de requête illisible."))?;
-        let chunk: Chunk = serde_json::from_str(&text).map_err(|_| AppError::bad("Corps de requête illisible."))?;
-        let stats = analyse(chunk.e.get()).map_err(AppError::bad)?;
-        Ok((chunk.k, chunk.d, chunk.rid, chunk.e.get().to_owned(), stats))
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("lecture d'un morceau : {e}")))??;
-    let (key, distinct, rid, events_json, stats) = parsed;
-
-    if !valid_id(&rid) {
+    // Tout ce qui ne coûte rien d'abord : un envoi pour un site inconnu ou qui n'enregistre
+    // pas est écarté sans que son corps soit décompressé ni lu.
+    let rid = options.rid.as_str();
+    if !valid_id(rid) {
         return Err(AppError::bad("Identifiant d'enregistrement invalide."));
     }
-    let Some(project) = state.projects.by_key(&state.pool, &key).await? else {
+    let Some(project) = state.projects.by_key(&state.pool, &options.k).await? else {
         return Ok(Outcome::Stop);
     };
     if !project.recording.enabled {
         return Ok(Outcome::Stop);
     }
-    let Some(distinct) = distinct.map(|d| ingest::clip(&d, 200)).filter(|d| d.len() >= 8) else {
+
+    let _slot = tokio::time::timeout(Duration::from_secs(5), CHUNK_SLOTS.acquire())
+        .await
+        .map_err(|_| AppError::TooManyRequests)?
+        .map_err(blocking_failed)?;
+    let compressed = options.z.as_deref() == Some("1");
+    let (distinct, events_json, events) = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+        let text = if compressed { gunzip_limited(&body)? } else { body.to_vec() };
+        let chunk: Chunk = serde_json::from_slice(&text).map_err(|_| AppError::bad("Corps de requête illisible."))?;
+        let events = parse_events(chunk.e.get()).map_err(AppError::bad)?;
+        // Hors des chaînes, un saut de ligne n'est qu'une espace : on l'ôte, le fichier compte un morceau par ligne.
+        let events_json: String = chunk.e.get().chars().filter(|c| *c != '\n' && *c != '\r').collect();
+        Ok((chunk.d, events_json, events))
+    })
+    .await
+    .map_err(blocking_failed)??;
+
+    // Sans identifiant stable, le visiteur n'a pas consenti : rien n'est gardé.
+    let Some(distinct) = ingest::stable_id(distinct.as_deref()) else {
         return Ok(Outcome::Stop);
     };
-    let urls: Vec<referrer::ParsedUrl> = stats.hrefs.iter().filter_map(|h| referrer::parse_url(h)).collect();
-    if urls.len() != stats.hrefs.len() || urls.iter().any(|u| !project.accepts_host(&u.host)) {
-        return Ok(Outcome::Ignored);
-    }
     let visitor = ingest::stable_visitor(project.id, &distinct);
     let now = Utc::now();
 
-    let client = state.pool.get().await?;
-    let existing = client
-        .query_opt(
-            "SELECT visitor_id, raw_bytes, started_at FROM recordings WHERE project_id = $1 AND id = $2",
-            &[&project.id, &rid],
-        )
-        .await?;
-    match &existing {
+    let (existing, used) = {
+        let client = state.pool.get().await?;
+        let existing = client
+            .query_opt(
+                "SELECT visitor_id, raw_bytes, started_at, last_action_ms FROM recordings
+                  WHERE project_id = $1 AND id = $2",
+                &[&project.id, &rid],
+            )
+            .await?;
+        let used = state.usage.used(&client, project.id).await?;
+        (existing, used)
+        // La connexion est rendue ici : la compression et l'écriture sur disque ne la retiennent pas.
+    };
+    let previous_action = match &existing {
         Some(row) => {
             let owner: i64 = row.get(0);
             let raw: i64 = row.get(1);
             let started: chrono::DateTime<Utc> = row.get(2);
-            if owner != visitor {
+            if owner != visitor || raw >= MAX_RECORDING_BYTES || (now - started).num_minutes() >= MAX_RECORDING_MINUTES
+            {
                 return Ok(Outcome::Stop);
             }
-            if raw >= MAX_RECORDING_BYTES || (now - started).num_minutes() >= MAX_RECORDING_MINUTES {
-                return Ok(Outcome::Stop);
-            }
+            row.get::<_, Option<i64>>(3)
         }
-        None => {
-            // Un enregistrement commence par l'état complet d'une page : sans lui, rien n'est rejouable.
-            if stats.pages == 0 {
-                return Ok(Outcome::Stop);
-            }
-        }
+        None => None,
+    };
+    let stats = summarise(&events, previous_action).map_err(AppError::bad)?;
+    drop(events);
+    // Un enregistrement commence par l'état complet d'une page : sans lui, rien n'est rejouable.
+    if existing.is_none() && stats.pages == 0 {
+        return Ok(Outcome::Stop);
     }
-    let used: i64 = client
-        .query_one("SELECT COALESCE(SUM(bytes), 0)::bigint FROM recordings WHERE project_id = $1", &[&project.id])
-        .await?
-        .get(0);
     if used >= i64::from(project.recording.max_mb) << 20 {
         return Ok(Outcome::Stop);
     }
+    let urls: Vec<referrer::ParsedUrl> = stats.hrefs.iter().filter_map(|h| referrer::parse_url(h)).collect();
+    if urls.len() != stats.hrefs.len() || urls.iter().any(|u| !project.accepts_host(&u.host)) {
+        return Ok(Outcome::Ignored);
+    }
 
-    let path = file_path(&state.config.data_dir, project.id, &rid);
+    let path = file_path(&state.config.data_dir, project.id, rid);
     let raw_len = events_json.len() as i64 + 1;
     let stored = tokio::task::spawn_blocking(move || append_chunk(&path, &events_json))
         .await
-        .map_err(|e| AppError::Internal(format!("écriture d'un morceau : {e}")))?
-        .map_err(|e| AppError::Internal(format!("écriture d'un morceau : {e}")))? as i64;
+        .map_err(blocking_failed)?
+        .map_err(blocking_failed)? as i64;
+    state.usage.add(project.id, stored);
 
     let entry = urls.first();
     let started = now - chrono::Duration::milliseconds(stats.span_ms);
+    let client = state.pool.get().await?;
     client
         .execute(
             "INSERT INTO recordings (project_id, id, visitor_id, started_at, last_at, active_ms, events, chunks, bytes,
-                                     raw_bytes, clicks, pages, entry_host, entry_path, device, browser, os, view_w, view_h)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                                     raw_bytes, clicks, pages, entry_host, entry_path, device, browser, os, view_w, view_h,
+                                     last_action_ms)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
              ON CONFLICT (project_id, id) DO UPDATE SET
                  last_at = GREATEST(recordings.last_at, EXCLUDED.last_at),
                  active_ms = recordings.active_ms + EXCLUDED.active_ms,
@@ -417,7 +616,8 @@ async fn collect_inner(
                  clicks = recordings.clicks + EXCLUDED.clicks,
                  pages = recordings.pages + EXCLUDED.pages,
                  view_w = COALESCE(recordings.view_w, EXCLUDED.view_w),
-                 view_h = COALESCE(recordings.view_h, EXCLUDED.view_h)",
+                 view_h = COALESCE(recordings.view_h, EXCLUDED.view_h),
+                 last_action_ms = GREATEST(recordings.last_action_ms, EXCLUDED.last_action_ms)",
             &[
                 &project.id,
                 &rid,
@@ -437,6 +637,7 @@ async fn collect_inner(
                 &agent.os,
                 &stats.view.map(|v| v.0),
                 &stats.view.map(|v| v.1),
+                &stats.last_action_ms,
             ],
         )
         .await?;
@@ -517,17 +718,47 @@ mod tests {
         assert_eq!((stats.events, stats.clicks, stats.pages), (8, 1, 1));
         assert_eq!(stats.active_ms, 1500, "le trou de 16,5 s n'est pas du temps actif");
         assert_eq!(stats.span_ms, 20000);
-        assert_eq!(stats.first_href.as_deref(), Some("https://demo.test/a?x=1"));
+        assert_eq!(stats.hrefs, vec!["https://demo.test/a?x=1".to_string()]);
+        assert_eq!(stats.last_action_ms, Some(20000));
+
+        // Le temps actif se compte aussi à cheval sur deux envois.
+        let next = r#"[{"type":3,"timestamp":22000,"data":{"source":3,"id":1,"x":0,"y":900}}]"#;
+        assert_eq!(summarise(&parse_events(next).unwrap(), stats.last_action_ms).unwrap().active_ms, 2000);
+        assert_eq!(summarise(&parse_events(next).unwrap(), None).unwrap().active_ms, 0);
         assert_eq!(stats.view, Some((1280, 720)));
     }
 
     #[test]
     fn rejects_what_is_not_a_recording() {
-        for bad in
-            ["[]", "{}", "[1,2]", r#"[{"type":9,"timestamp":1}]"#, r#"[{"type":3}]"#, r#"[{"type":3,"timestamp":-4}]"#]
-        {
+        for bad in [
+            "[]",
+            "{}",
+            "[1,2]",
+            r#"[{"type":9,"timestamp":1}]"#,
+            r#"[{"type":3}]"#,
+            r#"[{"type":3,"timestamp":-4}]"#,
+            r#"[{"type":4,"timestamp":1,"data":{"width":10,"height":10}}]"#,
+            r#"[{"type":4,"timestamp":1,"data":{"href":["https://demo.test/"]}}]"#,
+        ] {
             assert!(analyse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn hostile_payloads_are_read_without_being_loaded() {
+        // Des millions de valeurs là où un nombre est attendu : parcourues, jamais gardées.
+        let huge = format!(
+            r#"[{{"type":3,"timestamp":1,"data":{{"source":[{}0],"type":{{"a":[1,2,3]}}}}}}]"#,
+            "0,".repeat(200_000)
+        );
+        let stats = analyse(&huge).unwrap();
+        assert_eq!((stats.events, stats.clicks, stats.active_ms), (1, 0, 0));
+        // Un envoi qui dépasse le nombre d'événements permis est refusé pendant la lecture.
+        let flood = format!("[{}]", vec![r#"{"type":3,"timestamp":1}"#; MAX_EVENTS_PER_CHUNK + 1].join(","));
+        assert!(parse_events(&flood).is_err());
+        let long =
+            format!(r#"[{{"type":4,"timestamp":1,"data":{{"href":"https://demo.test/{}"}}}}]"#, "a".repeat(10_000));
+        assert_eq!(analyse(&long).unwrap().hrefs[0].len(), 2048);
     }
 
     #[test]

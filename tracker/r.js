@@ -37,6 +37,7 @@
   if (!state.on) { ctx.stop = function () { session(null); }; return; }
 
   var buffer = [];
+  var owner = ctx.id(); // le visiteur à qui appartient l'enregistrement en cours
   var stopRrweb = null;
   var timer = null;
 
@@ -51,7 +52,7 @@
   }
 
   function post(body, compressed, leaving) {
-    var url = ctx.url + (compressed ? '?z=1' : '');
+    var url = ctx.url + '?k=' + encodeURIComponent(ctx.key) + '&rid=' + state.id + (compressed ? '&z=1' : '');
     // text/plain : requête simple, sans vérification CORS préalable.
     var blob = new Blob([body], { type: 'text/plain' });
     if (leaving && navigator.sendBeacon && blob.size < 60000 && navigator.sendBeacon(url, blob)) return;
@@ -64,14 +65,25 @@
   }
 
   function flush(leaving) {
-    if (!buffer.length) return;
     var id = ctx.id();
-    if (!id) return;
-    var body = JSON.stringify({ k: ctx.key, d: id, rid: state.id, e: buffer });
+    // Consentement retiré ou opposition, y compris depuis un autre onglet : tout s'arrête et rien ne part.
+    if (!id) return halt(true);
+    if (id !== owner) {
+      // Le visiteur vient d'être identifié (connexion) : la suite forme un nouvel enregistrement,
+      // qui repart d'un état complet de la page.
+      owner = id;
+      buffer = [];
+      state.id = newId();
+      session(state);
+      if (record.takeFullSnapshot) record.takeFullSnapshot(true);
+    }
+    if (!buffer.length) return;
+    var body = JSON.stringify({ d: id, e: buffer });
     buffer = [];
     state.t = Date.now();
     session(state);
-    if (leaving || !w.CompressionStream || body.length < 2000) return post(body, false, leaving);
+    // Un petit envoi part tel quel, et survit ainsi au changement de page. Un gros est compressé.
+    if (body.length < 60000 || !w.CompressionStream) return post(body, false, leaving);
     try {
       var stream = new Blob([body]).stream().pipeThrough(new w.CompressionStream('gzip'));
       new Response(stream).blob().then(function (zipped) { post(zipped, true, false); }, function () { post(body, false, false); });
@@ -83,10 +95,11 @@
       buffer.push(event);
       if (buffer.length >= 2000) flush(false);
     },
-    // Ce qui est saisi dans un champ ne quitte jamais le navigateur.
+    // Ce qui est saisi ne quitte jamais le navigateur : champs de texte masqués, zones éditables
+    // masquées, champs cachés, cases à cocher et boutons radio retirés de l'enregistrement.
     maskAllInputs: true,
-    maskTextSelector: ctx.cfg.mask_text ? '*' : '[data-synalyse-mask], .synalyse-mask',
-    blockSelector: '[data-synalyse-block], .synalyse-block',
+    maskTextSelector: ctx.cfg.mask_text ? '*' : '[data-synalyse-mask], .synalyse-mask, [contenteditable]:not([contenteditable="false"])',
+    blockSelector: '[data-synalyse-block], .synalyse-block, input[type="hidden"], input[type="checkbox"], input[type="radio"]',
     sampling: { mousemove: 50, scroll: 150, media: 800, input: 'last' },
     slimDOMOptions: { script: true, comment: true, headFavicon: true, headWhitespace: true, headMetaVerification: true },
     inlineStylesheet: true,

@@ -23,6 +23,8 @@ CREATE TABLE recordings (
     os          TEXT NOT NULL DEFAULT '',
     view_w      INTEGER,
     view_h      INTEGER,
+    -- Dernière action du visiteur (horloge de son navigateur, en millisecondes) : sert au calcul du temps actif.
+    last_action_ms BIGINT,
     PRIMARY KEY (project_id, id)
 );
 CREATE INDEX recordings_recent_idx ON recordings (project_id, started_at DESC);

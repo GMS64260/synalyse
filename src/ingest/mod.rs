@@ -164,6 +164,15 @@ pub fn stable_visitor(project_id: i64, distinct_id: &str) -> i64 {
     ids::hash_to_id(&[b"stable", &project_id.to_be_bytes(), distinct_id.as_bytes()])
 }
 
+/// Identifiant stable envoyé par le navigateur, nettoyé, ou None s'il n'est pas recevable.
+/// Un identifiant d'utilisateur connecté (`u:…`) peut être court ; un identifiant tiré au
+/// hasard par le traceur fait au moins huit caractères.
+pub(crate) fn stable_id(raw: Option<&str>) -> Option<String> {
+    let id = clip(raw?, 200);
+    let user = id.strip_prefix("u:").is_some_and(|rest| !rest.is_empty());
+    (user || id.len() >= 8).then_some(id)
+}
+
 /// Adresse du visiteur, compte tenu des mandataires de confiance.
 pub fn client_ip(headers: &HeaderMap, peer: SocketAddr, trusted_proxies: usize) -> IpAddr {
     if trusted_proxies == 0 {
@@ -320,7 +329,7 @@ async fn collect_inner(state: &AppState, peer: SocketAddr, headers: &HeaderMap, 
     };
 
     let now = Utc::now();
-    let distinct = payload.d.as_deref().map(|d| clip(d, 200)).filter(|d| d.len() >= 8);
+    let distinct = stable_id(payload.d.as_deref());
     let (visitor, visitor_prev, identified) = match &distinct {
         Some(d) => (stable_visitor(project.id, d), None, true),
         None => {
@@ -379,6 +388,15 @@ mod tests {
         assert_eq!(client_ip(&headers(&["6.6.6.6", "203.0.113.7, 10.0.0.9"]), peer, 2).to_string(), "203.0.113.7");
         assert_eq!(client_ip(&headers(&[]), peer, 1), peer.ip());
         assert_eq!(client_ip(&headers(&["n'importe quoi"]), peer, 1), peer.ip());
+    }
+
+    #[test]
+    fn stable_ids() {
+        assert_eq!(stable_id(Some("u:42")).as_deref(), Some("u:42"), "utilisateur connecté à identifiant court");
+        assert_eq!(stable_id(Some(" 123e4567-e89b ")).as_deref(), Some("123e4567-e89b"));
+        for bad in [None, Some(""), Some("u:"), Some("court"), Some("1234567")] {
+            assert_eq!(stable_id(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

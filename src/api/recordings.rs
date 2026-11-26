@@ -141,8 +141,10 @@ pub async fn events(
     let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(8);
     tokio::task::spawn_blocking(move || {
         let result = recording::read_recording(&path, |block| tx.blocking_send(Ok(Bytes::from(block))).is_ok());
+        // Un dernier bloc en cours d'écriture ou abîmé termine le flux sans le faire échouer :
+        // ce qui a été lu avant reste rejouable.
         if let Err(e) = result {
-            let _ = tx.blocking_send(Err(e));
+            tracing::warn!(erreur = %e, "lecture d'un enregistrement interrompue");
         }
     });
     let stream = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|item| (item, rx)) });
@@ -161,6 +163,7 @@ pub async fn delete(
 ) -> Result<Json<Value>, AppError> {
     let (client, _) = find(&state, &principal, project_id, &id, Need::Write).await?;
     client.execute("DELETE FROM recordings WHERE project_id = $1 AND id = $2", &[&project_id, &id]).await?;
+    state.usage.forget(project_id);
     let dir = state.config.data_dir.clone();
     tokio::task::spawn_blocking(move || recording::delete_file(&dir, project_id, &id)).await.ok();
     Ok(Json(json!({ "deleted": true })))

@@ -36,6 +36,7 @@ pub struct AppState {
     pub projects: Arc<ingest::ProjectCache>,
     pub salts: Arc<ingest::SaltStore>,
     pub logins: Arc<auth::LoginLimiter>,
+    pub usage: Arc<recording::Usage>,
 }
 
 const USAGE: &str = "Usage :
@@ -161,7 +162,9 @@ async fn tracker() -> Response {
 /// Chargé par le traceur seulement quand le projet enregistre et que le visiteur y a consenti.
 async fn recorder() -> Response {
     script(format!(
-        "/*! rrweb — licence MIT, https://github.com/rrweb-io/rrweb */\n{};\n{}",
+        // rrweb est enfermé dans une fonction où `define`, `module` et `exports` n'existent pas : sur un
+        // site qui utilise un chargeur AMD, il s'installe quand même sous `window.rrwebRecord`.
+        "/*! rrweb — licence MIT, https://github.com/rrweb-io/rrweb */\n(function(){{var define,module,exports;\n{}\n}}).call(window);\n{}",
         include_str!("../vendor/rrweb/record.min.js"),
         include_str!("../tracker/r.js")
     ))
@@ -222,6 +225,7 @@ async fn serve() -> Result<(), String> {
         projects: Arc::default(),
         salts: Arc::default(),
         logins: Arc::default(),
+        usage: Arc::default(),
     };
     let listener = tokio::net::TcpListener::bind(listen).await.map_err(|e| format!("écoute sur {listen} : {e}"))?;
     tracing::info!(%listen, "synalyse écoute");

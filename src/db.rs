@@ -21,7 +21,13 @@ pub fn connect(database_url: &str) -> Result<Pool, String> {
     // Les « CREATE … IF NOT EXISTS » des migrations et des partitions n'ont pas à remplir le journal.
     config.options("-c client_min_messages=warning");
     let manager = Manager::from_config(config, NoTls, ManagerConfig { recycling_method: RecyclingMethod::Fast });
-    Pool::builder(manager).max_size(16).build().map_err(|e| e.to_string())
+    // Délai d'attente d'une connexion : une base saturée donne une erreur, pas un serveur figé.
+    Pool::builder(manager)
+        .max_size(16)
+        .runtime(deadpool_postgres::Runtime::Tokio1)
+        .wait_timeout(Some(std::time::Duration::from_secs(5)))
+        .build()
+        .map_err(|e| e.to_string())
 }
 
 pub async fn migrate(pool: &Pool) -> Result<Vec<i32>, AppError> {

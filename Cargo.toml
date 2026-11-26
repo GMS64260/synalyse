@@ -1,10 +1,10 @@
 [package]
-name = "synatomo"
+name = "synalyse"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 description = "Mesure d'audience et analyse produit auto-hébergées, en Rust."
-repository = "https://github.com/GMS64260/synatomo"
+repository = "https://github.com/GMS64260/synalyse"
 
 [dependencies]
 argon2 = "0.6.0"

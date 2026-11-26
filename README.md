@@ -1,4 +1,4 @@
-# Synatomo
+# Synalyse
 
 Mesure d'audience et analyse produit auto-hébergées : entonnoirs, parcours, rétention, enregistrements de session et heatmaps. Un binaire Rust et un PostgreSQL, là où les plateformes équivalentes demandent une quarantaine de conteneurs.
 
@@ -6,7 +6,7 @@ Mesure d'audience et analyse produit auto-hébergées : entonnoirs, parcours, r�
 
 ## Pourquoi
 
-PostHog répond au besoin, mais son auto-hébergement demande 16 Go de RAM, ClickHouse, Kafka et Redis. Matomo est léger, mais ses fonctions d'analyse produit sont payantes et propriétaires. Synatomo vise l'essentiel du premier avec l'empreinte du second.
+PostHog répond au besoin, mais son auto-hébergement demande 16 Go de RAM, ClickHouse, Kafka et Redis. Matomo est léger, mais ses fonctions d'analyse produit sont payantes et propriétaires. Synalyse vise l'essentiel du premier avec l'empreinte du second.
 
 ## Principes
 
@@ -34,4 +34,4 @@ PostHog répond au besoin, mais son auto-hébergement demande 16 Go de RAM, Clic
 
 AGPL v3 ou ultérieure. Voir [LICENSE](LICENSE). Si vous hébergez une version modifiée comme service, vous devez en publier les modifications.
 
-Synatomo est un projet indépendant, sans lien avec Matomo, InnoCraft ni PostHog.
+Synalyse est un projet indépendant, sans lien avec Matomo, InnoCraft ni PostHog.

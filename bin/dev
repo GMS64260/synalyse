@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Outils de développement de Synatomo. La compilation tourne dans un conteneur
+# Outils de développement de Synalyse. La compilation tourne dans un conteneur
 # plafonné en mémoire : le VPS ne doit jamais geler à cause d'un build.
 # Usage : bin/dev cargo <args> | build | check | unit | run | stop | logs | seed | test | sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE=rust:1-slim-trixie
-CACHE=synatomo_cache
-PORT="${SYN_DEV_PORT:-8292}"
-NAME=synatomo_dev
+CACHE=synalyse_cache
+PORT="${SYNALYSE_DEV_PORT:-8292}"
+NAME=synalyse_dev
 
 toolchain() {
   sudo -n docker volume inspect "$CACHE" >/dev/null 2>&1 || {
@@ -27,14 +27,14 @@ case "$cmd" in
   build) toolchain cargo build "$@" ;;
   unit)  toolchain cargo test "$@" ;;
   run)
-    # Relance le serveur de dev sur 127.0.0.1:$PORT avec une base jetable (volume synatomo_devdata).
+    # Relance le serveur de dev sur 127.0.0.1:$PORT avec une base jetable (volume synalyse_devdata).
     sudo -n docker rm -f "$NAME" >/dev/null 2>&1 || true
-    [ "${1:-}" = "--fresh" ] && sudo -n docker volume rm synatomo_devdata >/dev/null 2>&1 || true
+    [ "${1:-}" = "--fresh" ] && sudo -n docker volume rm synalyse_devdata >/dev/null 2>&1 || true
     sudo -n docker run -d --name "$NAME" --memory 256m -p "127.0.0.1:$PORT:8292" \
-      -e SYNATOMO_LISTEN=0.0.0.0:8292 -e SYNATOMO_DATA=/data -e SYNATOMO_DEV=1 \
-      -v "$CACHE":/cache:ro -v synatomo_devdata:/data "$IMAGE" /cache/target/debug/synatomo serve >/dev/null
+      -e SYNALYSE_LISTEN=0.0.0.0:8292 -e SYNALYSE_DATA=/data -e SYNALYSE_DEV=1 \
+      -v "$CACHE":/cache:ro -v synalyse_devdata:/data "$IMAGE" /cache/target/debug/synalyse serve >/dev/null
     echo "http://127.0.0.1:$PORT" ;;
-  exec)  sudo -n docker exec -i "$NAME" /cache/target/debug/synatomo "$@" ;;
+  exec)  sudo -n docker exec -i "$NAME" /cache/target/debug/synalyse "$@" ;;
   stop)  sudo -n docker rm -f "$NAME" >/dev/null 2>&1 || true ;;
   logs)  sudo -n docker logs --tail "${1:-60}" "$NAME" ;;
   seed)  node "$ROOT/dev/seed.mjs" "$@" ;;

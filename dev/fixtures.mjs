@@ -1,5 +1,5 @@
 // Jeu d'essai déterministe pour l'instance de développement.
-// Le même générateur sert à remplir Matomo (dev/seed.mjs) et à calculer les
+// Le même générateur sert à remplir l'instance de dev et à calculer les
 // résultats attendus dans les tests : aucun chiffre n'est écrit en dur.
 
 export const SITE = { name: 'Boutique démo', url: 'https://demo.test', timezone: 'Europe/Paris' };

@@ -9,6 +9,7 @@ mod ids;
 mod ingest;
 mod referrer;
 mod ua;
+mod web;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -155,6 +156,8 @@ async fn not_found() -> Response {
 
 fn app(state: AppState) -> Router {
     Router::new()
+        .route("/", get(web::index))
+        .route("/assets/{name}", get(web::asset))
         .route("/healthz", get(health))
         .route("/c.js", get(tracker))
         .route("/i", post(ingest::collect).options(ingest::preflight))

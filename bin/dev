@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Pilote l'instance de développement Synatomo (jamais la production).
+# Usage : bin/dev up|down|reset|install|console <args>|php <args>|sql|logs|link|seed|test
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DC=(sudo -n docker compose --env-file "$ROOT/dev/.env" -f "$ROOT/dev/docker-compose.yml")
+APP=synatomo_dev_app
+DB=synatomo_dev_db
+asweb() { sudo -n docker exec -i -u www-data "$APP" "$@"; }
+
+# Relie chaque plugin du dépôt dans l'instance (lien symbolique vers le montage en lecture seule).
+link() {
+  for d in "$ROOT"/plugins/*/; do
+    n="$(basename "$d")"
+    asweb sh -c "[ -e /var/www/html/plugins/$n ] || ln -s /opt/synatomo/plugins/$n /var/www/html/plugins/$n"
+  done
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  up)      "${DC[@]}" up -d ;;
+  down)    "${DC[@]}" down ;;
+  reset)   "${DC[@]}" down -v ; "${DC[@]}" up -d ;;
+  logs)    "${DC[@]}" logs --tail=80 "$@" ;;
+  link)    link ;;
+  install) link; asweb php /opt/synatomo/dev/install.php ;;
+  console) asweb php /var/www/html/console "$@" ;;
+  php)     asweb php "$@" ;;
+  sql)     sudo -n docker exec -i "$DB" sh -c 'mariadb -umatomo -p"$MARIADB_PASSWORD" matomo '"$*" ;;
+  seed)    node "$ROOT/dev/seed.mjs" "$@" ;;
+  test)    node --test "$ROOT/tests/" "$@" ;;
+  *) sed -n 2,3p "$0"; exit 1 ;;
+esac

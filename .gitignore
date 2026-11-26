@@ -1,0 +1,6 @@
+# Secrets et état local : jamais versionnés
+.env
+dev/.env
+dev/.token
+node_modules/
+*.log

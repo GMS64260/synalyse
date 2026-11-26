@@ -157,10 +157,12 @@ function render() {
   if (!me.projects.length) return renderNewProject(true);
   if (!project) return go(`p/${me.projects[0].id}`);
   if (route.sub === 'installation') return renderInstall(project);
+  if (route.sub === 'entonnoirs') return renderFunnels(project, route.params);
+  if (route.sub === 'parcours') return renderPaths(project, route.params);
   renderDashboard(project, route.params);
 }
 
-const brand = () => h('a', { class: 'brand', href: '#' }, cairn(), h('span', { text: 'Synalyse' }));
+const brand = () => h('a', { class: 'brand', href: '#', translate: 'no' }, cairn(), h('span', { text: 'Synalyse' }));
 
 // ——— Connexion ———
 
@@ -180,7 +182,7 @@ function renderLogin() {
       button.disabled = false;
     }
   } },
-  h('label', {}, 'Adresse e-mail', h('input', { class: 'field', type: 'email', name: 'email', autocomplete: 'username', required: true, autofocus: true })),
+  h('label', {}, 'Adresse e-mail', h('input', { class: 'field', type: 'email', name: 'email', autocomplete: 'username', required: true, spellcheck: 'false', autofocus: matchMedia('(pointer: fine)').matches })),
   h('label', {}, 'Mot de passe', h('input', { class: 'field', type: 'password', name: 'password', autocomplete: 'current-password', required: true })),
   error, button);
   mount(h('div', { class: 'screen' }, brand(), h('h1', { text: 'Connexion' }),
@@ -217,10 +219,10 @@ function renderNewProject(first = false) {
   admin.length > 1
     ? h('label', {}, 'Organisation', h('select', { class: 'field', name: 'org' }, admin.map((o) => h('option', { value: o.id, text: o.name }))))
     : h('input', { type: 'hidden', name: 'org', value: admin[0].id }),
-  h('label', {}, 'Nom du site', h('input', { class: 'field', name: 'name', required: true, maxlength: 100, placeholder: 'Boutique en ligne', autofocus: true })),
-  h('label', {}, 'Domaine', h('input', { class: 'field', name: 'domain', placeholder: 'exemple.fr', autocomplete: 'off', spellcheck: 'false' }),
+  h('label', {}, 'Nom du site', h('input', { class: 'field', name: 'name', required: true, maxlength: 100, placeholder: 'Boutique en ligne…', autocomplete: 'off' })),
+  h('label', {}, 'Domaine', h('input', { class: 'field', name: 'domain', placeholder: 'exemple.fr…', autocomplete: 'off', spellcheck: 'false', inputmode: 'url' }),
     h('small', { text: 'Seules les pages de ce domaine et de ses sous-domaines seront comptées. Laissez vide pour tout accepter.' })),
-  h('label', {}, 'Fuseau horaire', h('input', { class: 'field', name: 'timezone', value: zone, required: true, spellcheck: 'false' }),
+  h('label', {}, 'Fuseau horaire', h('input', { class: 'field', name: 'timezone', value: zone, required: true, spellcheck: 'false', autocomplete: 'off' }),
     h('small', { text: 'Une journée de statistiques commence à minuit dans ce fuseau.' })),
   error,
   h('div', { class: 'row-actions' }, button, first ? null : h('a', { class: 'btn quiet', href: '#', text: 'Annuler' })));
@@ -244,7 +246,7 @@ async function renderInstall(summary) {
   mount(h('div', { class: 'screen wide' }, brand(),
     h('h1', { text: `Installer Synalyse sur ${project.name}` }),
     h('p', { class: 'lead', text: 'Collez cette ligne dans le <head> de toutes les pages à mesurer.' }),
-    h('pre', { class: 'snippet', tabindex: '0' }, h('code', { text: code })),
+    h('pre', { class: 'snippet', tabindex: '0', translate: 'no' }, h('code', { text: code })),
     h('div', { class: 'row-actions' }, copy, h('a', { class: 'btn', href: `#p/${project.id}`, text: 'Voir les statistiques' })),
     h('ol', { class: 'steps' },
       h('li', {}, h('strong', { text: 'Aucun bandeau de cookies à ajouter. ' }), "Par défaut, Synalyse ne dépose rien dans le navigateur et ne reconnaît pas un visiteur d'un jour à l'autre."),
@@ -252,27 +254,33 @@ async function renderInstall(summary) {
       h('li', {}, h('strong', { text: "Permettre l'opposition. " }), "Reliez un bouton de votre politique de confidentialité à synalyse('optout')."))));
 }
 
-// ——— Tableau de bord ———
+// ——— Cadre commun aux écrans d'un site : barre du haut, sections, période, filtres ———
 
-function renderDashboard(project, params) {
+const SECTIONS = [['', 'Audience'], ['entonnoirs', 'Entonnoirs'], ['parcours', 'Parcours']];
+const SHARED_PARAMS = ['period', 'from', 'to', ...Object.keys(FILTER_NAMES)];
+
+function shell(project, params, section) {
   const token = ++renderToken;
   const period = resolvePeriod(params, project.timezone);
-  const metric = METRICS.some((m) => m.chart && m.key === params.get('metric')) ? params.get('metric') : 'visitors';
   const filters = Object.keys(FILTER_NAMES).filter((key) => params.has(key)).map((key) => [key, params.get(key)]);
-  const base = `/api/projects/${project.id}/stats`;
+  const root = `/api/projects/${project.id}`;
   const filterQuery = filters.map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
-  const range = (from, to) => `from=${from}&to=${to}${filterQuery}`;
+  const range = (from = period.from, to = period.to) => `from=${from}&to=${to}${filterQuery}`;
+  const pathOf = (name) => `p/${project.id}${name ? '/' + name : ''}`;
+  /** Paramètres qui suivent l'utilisateur d'une section à l'autre : période et filtres. */
+  const shared = () => new URLSearchParams([...params].filter(([key]) => SHARED_PARAMS.includes(key)));
 
-  /** Navigue vers le même écran avec des paramètres modifiés (null supprime). */
-  const update = (changes) => {
+  /** Adresse du même écran avec des paramètres modifiés (null supprime) : sert aux liens, donc au clic milieu. */
+  const href = (changes) => {
     const next = new URLSearchParams(params);
     for (const [key, value] of Object.entries(changes)) {
       if (value === null) next.delete(key); else next.set(key, value);
     }
-    go(`p/${project.id}`, next);
+    const query = next.toString();
+    return `#${pathOf(section)}${query ? '?' + query : ''}`;
   };
+  const update = (changes) => { location.hash = href(changes); };
 
-  // Barre du haut
   const live = h('span', { class: 'live', role: 'status' }, h('i'), h('span', { text: 'Temps réel…' }));
   const periodSelect = h('select', { class: 'field', 'aria-label': 'Période', onchange: (event) => {
     const value = event.target.value;
@@ -283,30 +291,64 @@ function renderDashboard(project, params) {
     h('input', { class: 'field', type: 'date', 'aria-label': 'Au', value: period.to, min: period.from, onchange: (e) => validDay(e.target.value) && update({ to: e.target.value }) }),
   ] : [];
   const projectPicker = me.projects.length > 1
-    ? h('select', { class: 'field site', 'aria-label': 'Site', onchange: (e) => go(`p/${e.target.value}`, params) },
+    ? h('select', { class: 'field site', 'aria-label': 'Site', onchange: (e) => go(`p/${e.target.value}${section ? '/' + section : ''}`, new URLSearchParams([...shared()].filter(([key]) => ['period', 'from', 'to'].includes(key)))) },
       me.projects.map((p) => h('option', { value: p.id, text: p.name, selected: p.id === project.id })))
     : h('strong', { text: project.name });
   const topbar = h('header', { class: 'topbar' }, brand(), projectPicker, live, h('span', { class: 'spacer' }), ...custom, periodSelect,
     h('details', { class: 'menu' }, h('summary', { class: 'field', text: 'Réglages' }), h('div', { class: 'menu-items' },
-      h('a', { href: `#p/${project.id}/installation`, text: 'Installer le code de suivi' }),
+      h('a', { href: `#${pathOf('installation')}`, text: 'Installer le code de suivi' }),
       h('a', { href: '#new', text: 'Ajouter un site' }),
       h('button', { type: 'button', text: 'Se déconnecter', onclick: async () => {
         await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
         me = null;
         renderLogin();
       } }))));
-
-  // Filtres actifs
+  const nav = h('nav', { class: 'sections', 'aria-label': 'Sections' }, SECTIONS.map(([name, label]) => {
+    const query = shared().toString();
+    return h('a', { href: `#${pathOf(name)}${query ? '?' + query : ''}`, 'aria-current': name === section ? 'page' : null, text: label });
+  }));
   const chips = h('div', { class: 'filters' }, filters.map(([key, value]) => h('span', { class: 'chip' },
     h('span', { text: FILTER_NAMES[key] }), displayLabel(key, value),
     h('button', { type: 'button', 'aria-label': `Retirer le filtre ${FILTER_NAMES[key]}`, text: '×', onclick: () => update({ [key]: null }) }))));
+
+  const stale = () => token !== renderToken;
+  const fail = (target) => (error) => {
+    if (stale()) return;
+    if (error.status === 401) { me = null; return renderLogin(); }
+    target.replaceChildren(h('p', { class: 'empty', text: error.message }));
+  };
+  // Temps réel, rafraîchi toutes les trente secondes tant que l'écran est affiché.
+  const refreshLive = () => api(`${root}/stats/realtime`).then((data) => {
+    if (stale()) return;
+    const n = data.last_5_minutes;
+    live.classList.toggle('on', n > 0);
+    live.lastChild.replaceChildren(h('b', { text: nf.format(n) }), n > 1 ? ' visiteurs en ce moment' : ' visiteur en ce moment');
+  }).catch(() => {});
+  const show = (...nodes) => {
+    const title = `${SECTIONS.find(([name]) => name === section)[1]} de ${project.name}`;
+    document.title = `${title} · Synalyse`;
+    mount(h('a', { class: 'skip', href: '#contenu', text: 'Aller au contenu', onclick: (e) => { e.preventDefault(); document.getElementById('contenu').focus(); } }),
+      topbar, h('main', { id: 'contenu', tabindex: '-1' }, h('h1', { class: 'sr-only', text: title }), nav, chips, ...nodes));
+    refreshLive();
+    liveTimer = setInterval(() => document.visibilityState === 'visible' && refreshLive(), 30000);
+  };
+  return { project, params, period, root, range, update, href, stale, fail, show };
+}
+
+// ——— Audience ———
+
+function renderDashboard(project, params) {
+  const ctx = shell(project, params, '');
+  const { period, href, stale, fail, range } = ctx;
+  const base = `${ctx.root}/stats`;
+  const metric = METRICS.some((m) => m.chart && m.key === params.get('metric')) ? params.get('metric') : 'visitors';
 
   // Dalle : chiffres clés et courbe
   const metricEls = METRICS.map((m) => {
     const value = h('span', { class: 'value', text: '–' });
     const delta = h('span', { class: 'delta' });
     const el = m.chart
-      ? h('button', { class: 'metric', type: 'button', 'aria-pressed': String(m.key === metric), onclick: () => update({ metric: m.key }) }, h('span', { class: 'label', text: m.label }), value, delta)
+      ? h('a', { class: 'metric', href: href({ metric: m.key }), 'aria-current': m.key === metric ? 'true' : null, title: `Afficher la courbe : ${m.label.toLowerCase()}` }, h('span', { class: 'label', text: m.label }), value, delta)
       : h('div', { class: 'metric' }, h('span', { class: 'label', text: m.label }), value, delta);
     return { ...m, el, value, delta };
   });
@@ -318,19 +360,12 @@ function renderDashboard(project, params) {
     const stateKey = 'tab_' + panel.tabs[0][0];
     const active = panel.tabs.find(([dim]) => dim === params.get(stateKey)) || panel.tabs[0];
     const body = h('div', {}, h('p', { class: 'empty', text: 'Chargement…' }));
-    const tabs = panel.tabs.length > 1 ? h('div', { class: 'tabs', role: 'tablist' }, panel.tabs.map(([dim, label]) =>
-      h('button', { type: 'button', role: 'tab', 'aria-selected': String(dim === active[0]), text: label, onclick: () => update({ [stateKey]: dim }) }))) : null;
+    const tabs = panel.tabs.length > 1 ? h('div', { class: 'tabs' }, panel.tabs.map(([dim, label]) =>
+      h('a', { href: href({ [stateKey]: dim }), 'aria-current': dim === active[0] ? 'true' : null, text: label }))) : null;
     return { dim: active[0], body, el: h('section', { class: 'slab panel' }, h('header', {}, h('h2', { text: panel.title }), tabs), body) };
   });
 
-  mount(topbar, h('main', {}, chips, slab, h('div', { class: 'panels' }, panels.map((p) => p.el))));
-
-  const stale = () => token !== renderToken;
-  const fail = (target) => (error) => {
-    if (stale()) return;
-    if (error.status === 401) { me = null; return renderLogin(); }
-    target.replaceChildren(h('p', { class: 'empty', text: error.message }));
-  };
+  ctx.show(slab, h('div', { class: 'panels' }, panels.map((p) => p.el)));
 
   // Chiffres clés : période demandée et période précédente de même longueur.
   const interval = period.hourly ? '&interval=hour' : '';
@@ -357,7 +392,7 @@ function renderDashboard(project, params) {
     .catch(fail(chart));
 
   function loadPanel(panel, totalVisitors) {
-    api(`${base}/breakdown?dim=${panel.dim}&limit=9&${range(period.from, period.to)}`)
+    api(`${base}/breakdown?dim=${panel.dim}&limit=9&${range()}`)
       .then((data) => {
         if (stale()) return;
         if (!data.rows.length) {
@@ -371,7 +406,7 @@ function renderDashboard(project, params) {
             const content = [h('span', { class: 'name' }, displayLabel(panel.dim, row.label)), h('span', { class: 'num', text: nf.format(row.visitors) }),
               h('span', { class: 'pct', text: totalVisitors ? pf.format(row.visitors / totalVisitors) : '' })];
             const el = canFilter
-              ? h('button', { class: 'row', type: 'button', title: 'Filtrer sur cette valeur', onclick: () => update({ [panel.dim]: row.label }) }, content)
+              ? h('a', { class: 'row', href: href({ [panel.dim]: row.label }), title: 'Filtrer sur cette valeur' }, content)
               : h('div', { class: 'row' }, content);
             el.style.setProperty('--part', `${(row.visitors / max) * 100}%`);
             return h('li', {}, el);
@@ -379,16 +414,6 @@ function renderDashboard(project, params) {
       })
       .catch(fail(panel.body));
   }
-
-  // Temps réel, rafraîchi toutes les trente secondes tant que l'écran est affiché.
-  const refreshLive = () => api(`${base}/realtime`).then((data) => {
-    if (stale()) return;
-    const n = data.last_5_minutes;
-    live.classList.toggle('on', n > 0);
-    live.lastChild.replaceChildren(h('b', { text: nf.format(n) }), n > 1 ? ' visiteurs en ce moment' : ' visiteur en ce moment');
-  }).catch(() => {});
-  refreshLive();
-  liveTimer = setInterval(() => document.visibilityState === 'visible' && refreshLive(), 30000);
 }
 
 function displayLabel(dim, label) {
@@ -479,10 +504,264 @@ function drawChart(container, points, previous, metricLabel, empty) {
   container.replaceChildren(legend, root, tip);
 }
 
+// ——— Entonnoirs ———
+
+const STEP_KINDS = [['page', 'Page vue'], ['event', 'Événement']];
+const STEP_MATCHES = [['equals', 'est'], ['starts_with', 'commence par'], ['contains', 'contient'], ['ends_with', 'finit par'], ['regex', 'correspond à (regex)']];
+/** Brouillon en cours d'édition : survit aux rechargements de l'écran, pas à celui de la page. */
+let funnelDraft = null;
+
+async function renderFunnels(project, params) {
+  const ctx = shell(project, params, 'entonnoirs');
+  const body = h('div', {}, h('p', { class: 'empty', text: 'Chargement…' }));
+  ctx.show(body);
+  let funnels;
+  try {
+    funnels = (await api(`${ctx.root}/funnels`)).funnels;
+  } catch (error) {
+    return ctx.fail(body)(error);
+  }
+  if (ctx.stale()) return;
+
+  const editing = params.get('edit');
+  if (editing) return funnelEditor(ctx, body, funnels, editing === 'new' ? null : funnels.find((f) => String(f.id) === editing));
+  funnelDraft = null;
+
+  if (!funnels.length) {
+    return body.replaceChildren(h('section', { class: 'slab blank' },
+      h('h1', { text: 'Voyez où vos visiteurs abandonnent' }),
+      h('p', { text: "Un entonnoir suit une suite d'étapes, par exemple accueil, fiche produit, panier, commande, et compte les visites qui franchissent chacune." }),
+      h('button', { class: 'btn', type: 'button', text: 'Créer un entonnoir', onclick: () => ctx.update({ edit: 'new' }) })));
+  }
+  const current = funnels.find((f) => String(f.id) === params.get('funnel')) || funnels[0];
+  const report = h('div', {}, h('p', { class: 'empty', text: 'Calcul…' }));
+  body.replaceChildren(
+    h('div', { class: 'toolbar' },
+      h('select', { class: 'field', 'aria-label': 'Entonnoir', onchange: (e) => ctx.update({ funnel: e.target.value }) },
+        funnels.map((f) => h('option', { value: f.id, text: f.name, selected: f.id === current.id }))),
+      h('button', { class: 'btn quiet', type: 'button', text: 'Modifier', onclick: () => ctx.update({ edit: String(current.id) }) }),
+      h('button', { class: 'btn quiet', type: 'button', text: 'Nouvel entonnoir', onclick: () => ctx.update({ edit: 'new' }) })),
+    report);
+  api(`${ctx.root}/funnels/${current.id}/report?${ctx.range()}`)
+    .then((data) => !ctx.stale() && report.replaceChildren(funnelReport(data)))
+    .catch(ctx.fail(report));
+}
+
+function funnelReport(data) {
+  if (!data.entered) {
+    return h('section', { class: 'slab blank' }, h('p', { text: data.sessions_in_period
+      ? `Aucune des ${nf.format(data.sessions_in_period)} visites de la période n'a franchi la première étape. Vérifiez son motif.`
+      : 'Aucune visite sur cette période.' }));
+  }
+  const steps = data.steps.map((step, i) => {
+    const bar = h('div', { class: 'funnel-bar' }, h('i'));
+    bar.firstChild.style.width = `${Math.max(0.5, step.rate_from_start * 100)}%`;
+    if (i > 0) {
+      const lost = h('b');
+      lost.style.left = `${step.rate_from_start * 100}%`;
+      lost.style.width = `${(data.steps[i - 1].rate_from_start - step.rate_from_start) * 100}%`;
+      bar.append(lost);
+    }
+    const drop = step.dropped > 0 ? h('p', { class: 'funnel-drop' },
+      h('strong', { text: `${nf.format(step.dropped)} ${step.dropped > 1 ? 'abandons' : 'abandon'}` }),
+      ` (${pf.format(step.dropped / step.sessions)}) après cette étape : `,
+      step.next_after_drop.map((n) => n.exit ? `${nf.format(n.sessions)} quittent le site` : `${nf.format(n.sessions)} vont sur ${n.path}`).join(', '), '.') : null;
+    return h('li', { class: 'funnel-step' },
+      h('div', { class: 'funnel-head' },
+        h('span', { class: 'funnel-name' }, h('span', { class: 'funnel-index', text: String(i + 1) }), step.name),
+        h('span', { class: 'funnel-figures' }, h('strong', { text: nf.format(step.sessions) }), step.sessions > 1 ? ' visites' : ' visite',
+          i > 0 ? h('span', { text: ` · ${pf.format(step.rate_from_previous)} de l'étape précédente` }) : null,
+          i > 0 && step.median_seconds_from_previous !== null ? h('span', { text: ` · ${duration(step.median_seconds_from_previous)} en médiane` }) : null)),
+      bar, drop);
+  });
+  return h('section', { class: 'slab funnel' },
+    h('p', { class: 'funnel-summary' }, h('strong', { text: pf.format(data.conversion_rate) }),
+      ` des visites entrées dans l'entonnoir vont au bout : ${nf.format(data.converted)} sur ${nf.format(data.entered)}.`),
+    h('ol', { class: 'funnel-steps' }, steps));
+}
+
+async function funnelEditor(ctx, body, funnels, existing) {
+  if (!funnelDraft || funnelDraft.id !== (existing?.id ?? null)) {
+    funnelDraft = existing
+      ? { id: existing.id, name: existing.name, steps: existing.steps.map((s) => ({ ...s })) }
+      : { id: null, name: '', steps: [{ name: '', kind: 'page', match: 'equals', pattern: '' }, { name: '', kind: 'page', match: 'equals', pattern: '' }] };
+  }
+  const draft = funnelDraft;
+  const error = h('p', { class: 'error', role: 'alert' });
+  const preview = h('div', {});
+  const list = h('ol', { class: 'step-editor' });
+  const pagesList = h('datalist', { id: 'known-pages' });
+  const eventsList = h('datalist', { id: 'known-events' });
+  // Aide à la saisie : pages et événements réellement vus sur la période.
+  for (const [dim, target] of [['page', pagesList], ['event', eventsList]]) {
+    api(`${ctx.root}/stats/breakdown?dim=${dim}&limit=100&${ctx.range()}`)
+      .then((data) => target.replaceChildren(...data.rows.map((r) => h('option', { value: r.label }))))
+      .catch(() => {});
+  }
+  const drawSteps = () => list.replaceChildren(...draft.steps.map((step, i) => h('li', {},
+    h('span', { class: 'funnel-index', text: String(i + 1) }),
+    h('select', { class: 'field', 'aria-label': `Type de l'étape ${i + 1}`, onchange: (e) => { step.kind = e.target.value; drawSteps(); } },
+      STEP_KINDS.map(([value, label]) => h('option', { value, text: label, selected: step.kind === value }))),
+    h('select', { class: 'field', 'aria-label': `Comparaison de l'étape ${i + 1}`, onchange: (e) => { step.match = e.target.value; } },
+      STEP_MATCHES.map(([value, label]) => h('option', { value, text: label, selected: step.match === value }))),
+    h('input', { class: 'field grow', 'aria-label': `Motif de l'étape ${i + 1}`, value: step.pattern, placeholder: step.kind === 'page' ? '/panier…' : "Nom de l'événement…", autocomplete: 'off', name: `motif-${i + 1}`,
+      list: step.kind === 'page' ? 'known-pages' : 'known-events', spellcheck: 'false', oninput: (e) => { step.pattern = e.target.value; } }),
+    h('input', { class: 'field', 'aria-label': `Nom de l'étape ${i + 1}`, value: step.name, placeholder: 'Nom affiché, facultatif…', autocomplete: 'off', name: `nom-${i + 1}`, maxlength: 80, oninput: (e) => { step.name = e.target.value; } }),
+    h('button', { class: 'btn quiet', type: 'button', disabled: draft.steps.length <= 2, 'aria-label': `Retirer l'étape ${i + 1}`, text: 'Retirer',
+      onclick: () => { draft.steps.splice(i, 1); drawSteps(); } }))));
+  drawSteps();
+
+  const guard = (action) => async () => {
+    error.textContent = '';
+    try { await action(); } catch (e) { if (e.status === 401) { me = null; return renderLogin(); } error.textContent = e.message; }
+  };
+  const close = (changes) => { funnelDraft = null; ctx.update({ edit: null, ...changes }); };
+  const payload = () => ({ name: draft.name, steps: draft.steps });
+
+  body.replaceChildren(h('section', { class: 'slab editor' },
+    h('h1', { text: existing ? `Modifier « ${existing.name} »` : 'Nouvel entonnoir' }),
+    h('label', { class: 'editor-name' }, 'Nom', h('input', { class: 'field', name: 'nom-entonnoir', autocomplete: 'off', value: draft.name, maxlength: 100, placeholder: 'Achat en ligne…', oninput: (e) => { draft.name = e.target.value; } })),
+    h('p', { class: 'hint', text: "Une visite franchit une étape si elle la rencontre après la précédente ; d'autres pages peuvent s'intercaler." }),
+    list, pagesList, eventsList,
+    h('button', { class: 'btn quiet', type: 'button', text: 'Ajouter une étape', disabled: draft.steps.length >= 12,
+      onclick: () => { draft.steps.push({ name: '', kind: 'page', match: 'equals', pattern: '' }); drawSteps(); } }),
+    error,
+    h('div', { class: 'row-actions' },
+      h('button', { class: 'btn', type: 'button', text: 'Enregistrer', onclick: guard(async () => {
+        const saved = existing
+          ? await api(`${ctx.root}/funnels/${existing.id}`, { method: 'PUT', body: payload() })
+          : await api(`${ctx.root}/funnels`, { method: 'POST', body: payload() });
+        close({ funnel: String(saved.id) });
+      }) }),
+      h('button', { class: 'btn quiet', type: 'button', text: 'Essayer sans enregistrer', onclick: guard(async () => {
+        preview.replaceChildren(h('p', { class: 'empty', text: 'Calcul…' }));
+        try {
+          preview.replaceChildren(funnelReport(await api(`${ctx.root}/funnels/preview?${ctx.range()}`, { method: 'POST', body: { steps: draft.steps } })));
+        } catch (e) { preview.replaceChildren(); throw e; }
+      }) }),
+      h('button', { class: 'btn quiet', type: 'button', text: 'Annuler', onclick: () => close({}) }),
+      existing ? h('button', { class: 'btn quiet danger', type: 'button', text: 'Supprimer', onclick: guard(async () => {
+        if (!confirm(`Supprimer l'entonnoir « ${existing.name} » ?`)) return;
+        await api(`${ctx.root}/funnels/${existing.id}`, { method: 'DELETE' });
+        close({ funnel: null });
+      }) }) : null)),
+  preview);
+}
+
+// ——— Parcours ———
+
+const EXIT = '__sortie__';
+const OTHERS = '__autres__';
+const pathLabel = (label) => (label === EXIT ? 'Sortie du site' : label === OTHERS ? 'Autres pages' : label);
+
+async function renderPaths(project, params) {
+  const ctx = shell(project, params, 'parcours');
+  const depth = Math.min(8, Math.max(2, Number(params.get('depth')) || 4));
+  const start = params.get('start') || '';
+  const startSelect = h('select', { class: 'field', 'aria-label': 'Point de départ', onchange: (e) => ctx.update({ start: e.target.value || null }) },
+    h('option', { value: '', text: "Depuis l'entrée sur le site" }), start ? h('option', { value: start, text: `Depuis ${start}`, selected: true }) : null);
+  const depthSelect = h('select', { class: 'field', 'aria-label': "Nombre d'étapes", onchange: (e) => ctx.update({ depth: e.target.value }) },
+    [3, 4, 5, 6].map((n) => h('option', { value: n, text: `${n} étapes`, selected: n === depth })));
+  const diagram = h('div', { class: 'paths' }, h('p', { class: 'empty', text: 'Calcul…' }));
+  const note = h('p', { class: 'hint' });
+  ctx.show(h('div', { class: 'toolbar' }, startSelect, depthSelect), h('section', { class: 'slab' }, diagram), note);
+
+  api(`${ctx.root}/stats/breakdown?dim=page&limit=40&${ctx.range()}`).then((data) => {
+    if (ctx.stale()) return;
+    for (const row of data.rows) if (row.label !== start) startSelect.append(h('option', { value: row.label, text: `Depuis ${row.label}` }));
+  }).catch(() => {});
+
+  api(`${ctx.root}/paths?depth=${depth}&max_nodes=6&start=${encodeURIComponent(start)}&${ctx.range()}`).then((data) => {
+    if (ctx.stale()) return;
+    if (!data.matched) {
+      return diagram.replaceChildren(h('p', { class: 'empty', text: start ? `Aucune visite n'est passée par ${start} sur cette période.` : 'Aucune visite sur cette période.' }));
+    }
+    note.textContent = start
+      ? `${nf.format(data.matched)} visites sur ${nf.format(data.sessions_in_period)} sont passées par ${start}. Cliquez sur une page pour repartir de là.`
+      : `${nf.format(data.matched)} visites. L'épaisseur d'un lien est proportionnelle au nombre de visites ; cliquez sur une page pour repartir de là.`;
+    drawPaths(diagram, data, (label) => ctx.update({ start: label }));
+  }).catch(ctx.fail(diagram));
+}
+
+function drawPaths(container, data, onPick) {
+  // Colonnes : les pages de chaque niveau, puis les sorties venues du niveau précédent.
+  const columns = data.levels.map((level) => level.map((n) => ({ label: n.label, sessions: n.sessions })));
+  columns.push([]);
+  for (const link of data.links) {
+    if (link.to !== EXIT) continue;
+    const column = columns[link.level + 1];
+    const node = column.find((n) => n.label === EXIT) || column[column.push({ label: EXIT, sessions: 0 }) - 1];
+    node.sessions += link.sessions;
+  }
+  while (columns.length && !columns.at(-1).length) columns.pop();
+
+  const nodeW = 10; const gap = 14; const labelW = 170;
+  const W = Math.max(columns.length * (nodeW + labelW), container.clientWidth - 32);
+  const H = 420; const top = 8;
+  const tallest = Math.max(...columns.map((c) => c.reduce((s, n) => s + n.sessions, 0)));
+  const scale = (H - top - gap * (Math.max(...columns.map((c) => c.length)) - 1)) / tallest;
+  const colX = (i) => (columns.length === 1 ? 0 : (i * (W - nodeW - labelW)) / (columns.length - 1));
+  columns.forEach((column, i) => {
+    let y = top;
+    for (const node of column) {
+      Object.assign(node, { x: colX(i), y, h: Math.max(2, node.sessions * scale), out: 0, in: 0 });
+      y += node.h + gap;
+    }
+  });
+
+  const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': 'Diagramme des parcours de pages, niveau par niveau.' });
+  const find = (level, label) => columns[level]?.find((n) => n.label === label);
+  // Liens triés selon l'ordre des pages d'arrivée : moins de croisements.
+  const links = [...data.links].sort((a, b) => a.level - b.level
+    || columns[a.level].findIndex((n) => n.label === a.from) - columns[b.level].findIndex((n) => n.label === b.from)
+    || columns[a.level + 1].findIndex((n) => n.label === a.to) - columns[b.level + 1].findIndex((n) => n.label === b.to));
+  for (const link of links) {
+    const from = find(link.level, link.from); const to = find(link.level + 1, link.to);
+    if (!from || !to) continue;
+    const t = Math.max(1, link.sessions * scale);
+    const x1 = from.x + nodeW; const x2 = to.x; const mid = (x1 + x2) / 2;
+    const y1 = from.y + from.out; const y2 = to.y + to.in;
+    from.out += t; to.in += t;
+    const band = svg('path', { class: link.to === EXIT ? 'flow exit' : 'flow',
+      d: `M${x1},${y1}C${mid},${y1} ${mid},${y2} ${x2},${y2}L${x2},${y2 + t}C${mid},${y2 + t} ${mid},${y1 + t} ${x1},${y1 + t}Z` });
+    const title = svg('title');
+    title.textContent = `${pathLabel(link.from)} → ${pathLabel(link.to)} : ${nf.format(link.sessions)} ${link.sessions > 1 ? 'visites' : 'visite'}`;
+    band.append(title);
+    root.append(band);
+  }
+  columns.forEach((column) => {
+    for (const node of column) {
+      const special = node.label === EXIT || node.label === OTHERS;
+      const group = svg('g', { class: `node${node.label === EXIT ? ' exit' : ''}${special ? '' : ' pick'}` });
+      group.append(svg('rect', { x: node.x, y: node.y, width: nodeW, height: node.h, rx: 2 }));
+      const name = svg('text', { x: node.x + nodeW + 8, y: node.y + Math.min(node.h / 2, 14) + 4, class: 'node-name' });
+      const text = pathLabel(node.label);
+      name.textContent = text.length > 22 ? text.slice(0, 21) + '…' : text;
+      const count = svg('text', { x: node.x + nodeW + 8, y: node.y + Math.min(node.h / 2, 14) + 20, class: 'node-count' });
+      count.textContent = nf.format(node.sessions);
+      const title = svg('title');
+      title.textContent = `${text} : ${nf.format(node.sessions)} ${node.sessions > 1 ? 'visites' : 'visite'}`;
+      group.append(title, name);
+      if (node.h >= 26) group.append(count);
+      if (!special) {
+        group.setAttribute('tabindex', '0');
+        group.setAttribute('role', 'button');
+        group.setAttribute('aria-label', `Repartir de ${text}`);
+        group.addEventListener('click', () => onPick(node.label));
+        group.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onPick(node.label)));
+      }
+      root.append(group);
+    }
+  });
+  container.replaceChildren(root);
+}
+
 window.addEventListener('hashchange', () => me && render());
+// Un entonnoir en cours de saisie n'est pas perdu sur une fermeture d'onglet accidentelle.
+window.addEventListener('beforeunload', (event) => { if (funnelDraft) event.preventDefault(); });
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => me && readRoute().view === 'p' && !readRoute().sub && render(), 200);
+  resizeTimer = setTimeout(() => me && readRoute().view === 'p' && ['', 'parcours'].includes(readRoute().sub) && render(), 200);
 });
 boot();

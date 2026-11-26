@@ -41,6 +41,14 @@
 }
 
 * { box-sizing: border-box; }
+:root { color-scheme: light dark; }
+a, button, summary, select, input { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+h1, h2 { text-wrap: balance; }
+a.metric, a.row { color: inherit; text-decoration: none; display: block; }
+a.row { display: grid; }
+.skip { position: absolute; left: 12px; top: -60px; background: var(--surface); border: 1px solid var(--schiste); border-radius: 8px; padding: 8px 14px; z-index: 10; color: var(--encre); }
+.skip:focus { top: 10px; }
+main:focus { outline: none; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -59,7 +67,7 @@ button { cursor: pointer; }
 /* ——— Barre du haut ——— */
 .topbar {
   display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap;
-  max-width: 1180px; margin: 0 auto; padding: 18px 20px 14px;
+  max-width: 1180px; margin: 0 auto; padding: 18px max(20px, env(safe-area-inset-right)) 14px max(20px, env(safe-area-inset-left));
 }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 800; font-size: 18px; letter-spacing: -0.02em; text-decoration: none; color: inherit; }
 .brand svg { width: 24px; height: 24px; }
@@ -68,7 +76,7 @@ button { cursor: pointer; }
 .topbar .spacer { flex: 1; }
 .field {
   appearance: none; background: var(--surface); border: 1px solid var(--schiste); border-radius: 8px;
-  padding: 7px 12px; min-height: 36px;
+  padding: 7px 12px; min-height: 36px; color: var(--encre);
 }
 select.field { padding-right: 30px; background-image: linear-gradient(45deg, transparent 50%, var(--granit) 50%), linear-gradient(135deg, var(--granit) 50%, transparent 50%); background-position: calc(100% - 15px) 15px, calc(100% - 10px) 15px; background-size: 5px 5px; background-repeat: no-repeat; }
 .live { display: inline-flex; align-items: center; gap: 7px; color: var(--granit); font-size: 13px; }
@@ -88,7 +96,7 @@ select.site { max-width: 240px; text-overflow: ellipsis; }
 .link { background: none; border: 0; padding: 4px 2px; color: var(--granit); text-decoration: underline; text-underline-offset: 3px; }
 .link:hover { color: var(--encre); }
 
-main { max-width: 1180px; margin: 0 auto; padding: 0 20px 64px; }
+main { max-width: 1180px; margin: 0 auto; padding: 0 max(20px, env(safe-area-inset-right)) 64px max(20px, env(safe-area-inset-left)); }
 
 /* ——— Filtres actifs ——— */
 .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 0; margin-bottom: 12px; }
@@ -111,8 +119,8 @@ main { max-width: 1180px; margin: 0 auto; padding: 0 20px 64px; }
 .metric .delta { display: block; font-size: 13px; font-weight: 600; color: var(--granit); min-height: 20px; }
 .metric .delta.up { color: var(--lichen); }
 .metric .delta.down { color: var(--prune); }
-button.metric[aria-pressed="true"]::after { content: ""; position: absolute; left: 20px; right: 20px; bottom: -1px; height: 3px; background: var(--terre); border-radius: 3px 3px 0 0; }
-button.metric:hover .label { color: var(--encre); }
+a.metric[aria-current]::after { content: ""; position: absolute; left: 20px; right: 20px; bottom: -1px; height: 3px; background: var(--terre); border-radius: 3px 3px 0 0; }
+a.metric:hover .label { color: var(--encre); }
 .chart { border-top: 1px solid var(--schiste); padding: 16px 12px 8px; position: relative; }
 .chart svg { display: block; width: 100%; height: 260px; overflow: visible; }
 .chart .grid { stroke: var(--schiste); stroke-width: 1; }
@@ -138,9 +146,9 @@ button.metric:hover .label { color: var(--encre); }
 .panel header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 0 12px 10px; }
 .panel h2 { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
 .tabs { display: flex; gap: 2px; max-width: 100%; overflow-x: auto; }
-.tabs button { white-space: nowrap; }
-.tabs button { background: none; border: 0; padding: 4px 9px; border-radius: 6px; color: var(--granit); font-size: 13px; }
-.tabs button[aria-selected="true"] { color: var(--encre); background: var(--neve); font-weight: 600; }
+.tabs a { padding: 4px 9px; border-radius: 6px; color: var(--granit); font-size: 13px; text-decoration: none; white-space: nowrap; }
+.tabs a:hover { color: var(--encre); }
+.tabs a[aria-current] { color: var(--encre); background: var(--neve); font-weight: 600; }
 .rows { list-style: none; margin: 0; padding: 0; }
 .rows .head { display: flex; justify-content: space-between; color: var(--granit); font-size: 12px; padding: 0 12px 4px; }
 .row {
@@ -188,3 +196,58 @@ pre.snippet { background: var(--surface); border: 1px solid var(--schiste); bord
 @media (prefers-reduced-motion: no-preference) {
   .row::before { transition: width 0.25s ease; }
 }
+
+/* ——— Sections d'un site ——— */
+.sections { display: flex; gap: 4px; border-bottom: 1px solid var(--schiste); margin-bottom: 16px; overflow-x: auto; }
+.sections a { padding: 8px 14px 10px; color: var(--granit); text-decoration: none; font-weight: 600; border-bottom: 3px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.sections a:hover { color: var(--encre); }
+.sections a[aria-current="page"] { color: var(--encre); border-bottom-color: var(--terre); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+.toolbar .btn { min-height: 36px; padding: 6px 14px; }
+.hint { color: var(--granit); font-size: 14px; margin: 10px 2px 0; max-width: 78ch; }
+.blank { padding: 44px 28px 48px; display: grid; gap: 14px; justify-items: start; }
+.blank h1 { font-size: 24px; letter-spacing: -0.02em; line-height: 1.2; }
+.blank p { color: var(--granit); max-width: 62ch; }
+.btn.danger { color: var(--prune); border-color: var(--prune); }
+
+/* ——— Entonnoir : la partie perdue à chaque étape est hachurée en terre cuite ——— */
+.funnel { padding: 22px 24px 10px; }
+.funnel-summary { font-size: 17px; max-width: 70ch; }
+.funnel-summary strong { font-size: 30px; letter-spacing: -0.03em; margin-right: 6px; }
+.funnel-steps { list-style: none; margin: 20px 0 0; padding: 0; }
+.funnel-step { padding: 14px 0 16px; border-top: 1px solid var(--schiste); }
+.funnel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px 18px; flex-wrap: wrap; }
+.funnel-name { font-weight: 700; display: inline-flex; align-items: center; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
+.funnel-index { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--encre); color: var(--surface); font-size: 13px; font-weight: 700; display: inline-grid; place-items: center; }
+.funnel-figures { color: var(--granit); font-size: 14px; }
+.funnel-figures strong { color: var(--encre); font-size: 16px; }
+.funnel-bar { position: relative; height: 26px; background: var(--neve); border-radius: 5px; margin-top: 10px; overflow: hidden; }
+.funnel-bar i { position: absolute; inset: 0 auto 0 0; background: var(--serie); border-radius: 5px 0 0 5px; }
+.funnel-bar b { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(-45deg, var(--terre) 0 2px, transparent 2px 7px); opacity: 0.75; }
+.funnel-drop { color: var(--granit); font-size: 14px; margin-top: 8px; max-width: 86ch; overflow-wrap: anywhere; }
+.funnel-drop strong { color: var(--terre); }
+
+.editor { padding: 22px 24px 24px; display: grid; gap: 14px; margin-bottom: 16px; }
+.editor h1 { font-size: 22px; letter-spacing: -0.02em; }
+.editor-name { display: grid; gap: 6px; font-weight: 600; font-size: 14px; max-width: 420px; }
+.editor .hint { margin: 0; }
+.step-editor { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.step-editor li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.step-editor .grow { flex: 1 1 200px; min-width: 0; }
+.step-editor .btn { min-height: 36px; padding: 6px 12px; }
+.editor > .btn { justify-self: start; }
+
+/* ——— Parcours ——— */
+.paths { padding: 20px 16px 12px; overflow-x: auto; }
+.paths svg { display: block; }
+.paths .flow { fill: var(--serie); opacity: 0.16; }
+.paths .flow:hover { opacity: 0.34; }
+.paths .flow.exit { fill: var(--terre); opacity: 0.22; }
+.paths .node rect { fill: var(--serie); }
+.paths .node.exit rect { fill: var(--terre); }
+.paths .node-name { fill: var(--encre); font-size: 13px; font-weight: 600; }
+.paths .node-count { fill: var(--granit); font-size: 12px; }
+.paths .node.pick { cursor: pointer; }
+.paths .node.pick:hover .node-name { text-decoration: underline; }
+.topbar input[type="date"] { width: 148px; padding-inline: 8px; }
+.topbar select.field:not(.site) { max-width: 210px; }

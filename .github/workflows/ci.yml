@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Format, lint, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: synalyse
+          POSTGRES_PASSWORD: synalyse-ci
+          POSTGRES_DB: synalyse
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U synalyse" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SYNALYSE_DATABASE_URL: postgres://synalyse:synalyse-ci@127.0.0.1:5432/synalyse
+      SYNALYSE_LISTEN: 127.0.0.1:8292
+      SYNALYSE_BASE_URL: http://127.0.0.1:8292
+    steps:
+      - uses: actions/checkout@v4
+      - name: Chaîne Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests unitaires
+        run: cargo test --locked
+      - name: Compilation
+        run: cargo build --locked
+      - name: Serveur et comptes d'essai
+        run: |
+          ./target/debug/synalyse serve > server.log 2>&1 &
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8292/healthz && break; sleep 0.5; done
+          export SYNALYSE_ADMIN_PASSWORD=dev-password-local-1234
+          ./target/debug/synalyse admin create --email dev@synalyse.test --org "Démo"
+          ./target/debug/synalyse admin create --email autre@synalyse.test --org "Autre organisation"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests d'intégration
+        run: node --test tests/*.test.mjs
+      - name: Journal du serveur
+        if: failure()
+        run: cat server.log
+
+  image:
+    name: Image Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t synalyse:ci .
